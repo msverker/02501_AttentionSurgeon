@@ -1,0 +1,39 @@
+[project]
+name = "02460_AttentionSurgeon"
+version = "0.1.0"
+description = "bla bla bla"
+authors = [{name = "Mads, Mads, Andreas, Kasper"}]
+requires-python = ">=3.11"
+
+dependencies = [
+    "numpy==2.4.2",
+    "pandas==3.0.0",
+    "matplotlib==3.10.8",
+    "seaborn==0.13.2",
+    "scikit-learn==1.8.0",
+    "scipy==1.17.1",
+    "torch==2.10.0",
+    "torchvision==0.20.1",
+    "transformers==5.3.0",
+    "diffusers==0.37.0",
+    "huggingface-hub==1.7.1",
+    "einops==0.8.2",
+    "tqdm==4.67.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "pre-commit",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]  # errors, pyflakes, import sorting
+
+[tool.ruff.format]
+quote-style = "double"
