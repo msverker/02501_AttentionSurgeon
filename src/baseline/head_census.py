@@ -103,17 +103,93 @@ class AttentionCensus:
             "magnitude": magnitude_accum / num_batches
         }
 
+    def compute_importance(self, dataloader, probe, loss_fn, task="cls", num_batches=50):
+        importance_accum = torch.zeros(self.num_layers, self.num_heads)
+        attn_buffer = {}  # store attention tensors so we can read .grad after backward
+        hooks = []
+
+        def make_hook(layer_idx):
+            def hook(module, input, output):
+                # capture attention weights and retain gradient
+                attn = output[1]  # (B, num_heads, seq_len, seq_len)
+                attn.retain_grad()
+                attn_buffer[layer_idx] = attn
+            return hook
+
+        # register hooks on the right submodule
+        # hint: attention weights live in Dinov2SelfAttention, not Dinov2Attention
+        for i, layer in enumerate(self.backbone.model.encoder.layer):
+            h = layer.attention.attention.register_forward_hook(make_hook(i))
+            hooks.append(h)
+
+        for i, (imgs, labels) in enumerate(dataloader):
+            if i >= num_batches:
+                break
+            # forward through backbone + probe
+            # compute loss
+            # backward
+            # accumulate importance from attn_buffer gradients
+            imgs = imgs.to(self.backbone.device)
+            labels = labels.to(self.backbone.device)
+
+            self.backbone.zero_grad()  
+
+            # forward through backbone — needs output_attentions=True
+            outputs = self.backbone(imgs, output_attentions=True)
+
+            # forward through probe — task="cls" uses cls_token
+            if task == "cls":
+                logits = probe(outputs["cls_token"])
+            elif task == "seg":
+                    logits = probe(outputs)
+            elif task == "det":
+                logits = probe(outputs)
+
+            # compute loss + backward
+            loss = loss_fn(logits, labels)
+            loss.backward()
+
+            # accumulate importance
+            for layer_idx in range(self.num_layers):
+                attn = attn_buffer[layer_idx]      # (B, num_heads, seq_len, seq_len)
+                grad = attn.grad                    # same shape
+                # importance = |grad * attn| summed over token pairs, averaged over batch
+                importance = (grad * attn).abs().sum(dim=(2, 3)).mean(dim=0)  # (num_heads,)
+                importance_accum[layer_idx] += importance.cpu()
+                
+            for h in hooks:
+                h.remove()
+
+            return importance_accum / num_batches
+
 if __name__ == "__main__":
-    from backbone import DinoV2Backbone
-    from backbone import get_cifar100_loaders
+    from backbone import DinoV2Backbone, get_cifar100_loaders, ClassificationHead, cache_features
+    import torch.nn as nn
+    from torch.utils.data import TensorDataset, DataLoader
 
-    device = "mps" if torch.cuda.is_available() else "cpu"
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
     backbone = DinoV2Backbone(device=device)
+    train_loader, val_loader = get_cifar100_loaders(batch_size=64)
 
-    train_loader, val_loader = get_cifar100_loaders(batch_size=16)
+    # cache features — backbone runs once
+    print("Caching features...")
+    train_feats, train_labels = cache_features(backbone, train_loader)
+    val_feats, val_labels = cache_features(backbone, val_loader)
 
-    census = AttentionCensus(backbone)
-    results = census.run(val_loader, num_batches=5)
+    train_cached = DataLoader(TensorDataset(train_feats, train_labels), batch_size=64, shuffle=True)
+    val_cached = DataLoader(TensorDataset(val_feats, val_labels), batch_size=64, shuffle=False)
 
-    for metric, values in results.items():
-        print(f"{metric}: shape={values.shape}, min={values.min():.4f}, max={values.max():.4f}, mean={values.mean():.4f}")
+    # train probe on cached features
+    probe = ClassificationHead(in_dim=768, num_classes=100).to(device)
+    optimizer = torch.optim.Adam(probe.parameters(), lr=1e-3)
+    loss_fn = nn.CrossEntropyLoss()
+
+    for epoch in range(3):
+        probe.train()
+        for feats, labels in train_cached:
+            feats, labels = feats.to(device), labels.to(device)
+            loss = loss_fn(probe({"cls_token": feats}), labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        print(f"Epoch {epoch} done")
