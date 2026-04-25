@@ -67,7 +67,7 @@ class DinoV2Backbone(nn.Module):
     def __init__(self, device="cuda"):
         super().__init__()
         self.model = AutoModel.from_pretrained(
-            "facebook/dinov2-base", trust_remote_code=True
+            "facebook/dinov2-base", trust_remote_code=True, output_attentions=True
         )
         self.model.eval()
 
@@ -77,18 +77,28 @@ class DinoV2Backbone(nn.Module):
         self.device = device
         self.to(device)
 
-    def forward(self, x, head_mask=None):
+    def forward(self, x, head_mask=None, output_attentions=False):
         # head_mask shape: (num_layers, num_heads)
-        outputs = self.model(x, output_hidden_states=False)
+        outputs = self.model(
+            x,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=False
+        )
         last_hidden_state = outputs.last_hidden_state
-
         cls_token = last_hidden_state[:, 0, :]
         patch_tokens = last_hidden_state[:, 1:, :]
 
-        return {
+        result = {
             "cls_token": cls_token,
             "patch_tokens": patch_tokens,
         }
+
+        if output_attentions:
+            # tuple of (num_layers,) each (batch, num_heads, seq_len, seq_len)
+            result["attentions"] = outputs.attentions
+        
+        return result
 
 
 # -----------------------------
