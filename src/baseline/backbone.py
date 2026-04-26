@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from transformers import AutoImageProcessor, AutoModel
 
-from loaders import get_cifar100_loaders, get_ade20k_loaders, get_imagenet_loaders
+from baseline.loaders import get_cifar100_loaders, get_ade20k_loaders, get_imagenet_loaders
 
 # -----------------------------
 # Backbone with head masking
