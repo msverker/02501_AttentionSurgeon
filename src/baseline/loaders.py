@@ -81,3 +81,9 @@ def get_ade20k_loaders(batch_size=16):
     )
 
     return train_loader, val_loader
+
+
+if __name__ == "__main__":
+    train_loader, val_loader = get_imagenet_loaders(batch_size=16)
+    imgs, labels = next(iter(val_loader))
+    print(imgs.shape, labels.shape, labels[:5])
