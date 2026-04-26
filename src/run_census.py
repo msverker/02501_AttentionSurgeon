@@ -65,7 +65,6 @@ np.savez(
     entropy=results["entropy"].numpy(),
     distance=results["distance"].numpy(),
     activation_mag=results["magnitude"].numpy(),
-    importance=results["importance_cls"].numpy(),
-    # cls_query_entropy is optional — the viz script handles missing keys
+    importance=results["importance_cls"].detach().numpy(),
 )
 print("Saved head_profiles.npz")
