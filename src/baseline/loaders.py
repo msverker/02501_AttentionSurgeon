@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from transformers import AutoImageProcessor
 
-from data import ADE20KDataset, ImageNetValDataset
+from baseline.data import ADE20KDataset, ImageNetValDataset
 
 
 # -----------------------------
