@@ -16,9 +16,9 @@ train_loader, val_loader = get_imagenet_loaders(batch_size=64)
 
 # cache features
 print("Caching train features...")
-train_feats, train_labels = cache_features(backbone, train_loader)
+train_feats, train_labels = cache_features(backbone, train_loader, max_batches=800)  # cache ~50k samples for training probe
 print("Caching val features...")
-val_feats, val_labels = cache_features(backbone, val_loader)
+val_feats, val_labels = cache_features(backbone, val_loader, max_batches=200)  # cache ~10k samples for testing probe and census
 
 train_cached = DataLoader(
     TensorDataset(train_feats, train_labels), batch_size=256, shuffle=True
