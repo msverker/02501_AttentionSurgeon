@@ -13,7 +13,8 @@ def get_imagenet_loaders(batch_size=64):
     processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
     
     transform = transforms.Compose([
-        transforms.Resize(224),
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=processor.image_mean, std=processor.image_std),
     ])
