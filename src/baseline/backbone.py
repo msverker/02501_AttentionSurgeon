@@ -112,7 +112,9 @@ class ClassificationHead(nn.Module):
         self.fc = nn.Linear(in_dim, num_classes)
 
     def forward(self, feats):
-        return self.fc(feats["cls_token"])
+        if isinstance(feats, dict):
+            return self.fc(feats["cls_token"])
+        return self.fc(feats)
 
 
 class ADE20KHead(nn.Module):
