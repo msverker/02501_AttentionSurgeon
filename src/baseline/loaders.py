@@ -1,54 +1,89 @@
-import os
 
-import numpy as np
-import torch
-import torchvision.transforms.functional as TF
-from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 from transformers import AutoImageProcessor
 
+from data import ADE20KDataset, ImageNetValDataset
 
-class ADE20KDataset(Dataset):
-    def __init__(self, root, split="training", image_size=224):
-        self.root = root
-        self.split = split
-        self.image_size = image_size
 
-        self.images_dir = os.path.join(root, "images", split)
-        self.annotations_dir = os.path.join(root, "annotations", split)
+# -----------------------------
+# Data
+# -----------------------------
+def get_imagenet_loaders(batch_size=64):
+    processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+    
+    transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=processor.image_mean, std=processor.image_std),
+    ])
 
-        self.image_files = sorted(
-            [f for f in os.listdir(self.images_dir) if f.endswith(".jpg")]
-        )
+    train_set = datasets.ImageFolder(
+        "/dtu/imagenet/ILSVRC/Data/CLS-LOC/train", 
+        transform=transform
+    )
+    val_set = ImageNetValDataset(
+        val_dir="/dtu/imagenet/ILSVRC/Data/CLS-LOC/val",
+        solution_csv="/dtu/imagenet/LOC_val_solution.csv",
+        synset_mapping="/dtu/imagenet/LOC_synset_mapping.txt",
+        transform=transform
+    )
 
-        self.processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
-    def __len__(self):
-        return len(self.image_files)
+    return train_loader, val_loader
 
-    def __getitem__(self, idx):
-        img_name = self.image_files[idx]
+def get_cifar100_loaders(batch_size=64):
+    processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
 
-        img_path = os.path.join(self.images_dir, img_name)
-        ann_path = os.path.join(self.annotations_dir, img_name.replace(".jpg", ".png"))
+    transform = transforms.Compose(
+        [
+            transforms.Resize(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=processor.image_mean, std=processor.image_std),
+        ]
+    )
 
-        image = Image.open(img_path).convert("RGB")
-        mask = Image.open(ann_path)
+    train_set = datasets.CIFAR100(
+        root="./data", train=True, download=True, transform=transform
+    )
+    val_set = datasets.CIFAR100(
+        root="./data", train=False, download=True, transform=transform
+    )
 
-        # --- Resize mask ONLY (image handled by processor) ---
-        mask = TF.resize(
-            mask, (self.image_size, self.image_size), interpolation=Image.NEAREST
-        )
+    train_loader = DataLoader(
+        train_set, batch_size=batch_size, shuffle=True, num_workers=4
+    )
+    val_loader = DataLoader(
+        val_set, batch_size=batch_size, shuffle=False, num_workers=4
+    )
 
-        # --- Use DINOv2 processor ---
-        processed = self.processor(images=image, return_tensors="pt")
+    return train_loader, val_loader
 
-        image = processed["pixel_values"].squeeze(0)  # (3, 224, 224)
 
-        # --- Mask processing ---
-        mask = torch.from_numpy(np.array(mask)).long()
+def get_ade20k_loaders(batch_size=16):
+    root = (
+        "/Users/madssverker/Documents/"
+        "02501/02501_AttentionSurgeon/data/archive/ADEChallengeData2016"
+    )
 
-        mask = mask - 1
-        mask[mask == -1] = 255  # ignore index
+    train_set = ADE20KDataset(root=root, split="training")
+    val_set = ADE20KDataset(root=root, split="validation")
 
-        return image, mask
+    train_loader = DataLoader(
+        train_set, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True
+    )
+
+    val_loader = DataLoader(
+        val_set, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True
+    )
+
+    return train_loader, val_loader
+
+
+if __name__ == "__main__":
+    train_loader, val_loader = get_imagenet_loaders(batch_size=16)
+    imgs, labels = next(iter(val_loader))
+    print(imgs.shape, labels.shape, labels[:5])
