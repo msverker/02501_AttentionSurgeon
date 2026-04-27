@@ -21,7 +21,7 @@ _, val_loader = get_imagenet_loaders(batch_size=32)
 
 # load census
 print("Loading census...")
-census = dict(np.load("head_profiles_cls.npz"))
+census = dict(np.load("results/head_profiles_cls.npz"))
 census = {k: torch.tensor(v) for k, v in census.items()}
 
 # evaluator
