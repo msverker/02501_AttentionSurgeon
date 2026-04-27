@@ -1,15 +1,36 @@
+import torch
+from torch import nn
 
 class PruningEvaluator:
     def __init__(self, backbone, probe, dataloader, task="cls"):
         # stores backbone, probe, eval dataloader
-        ...
+        self.backbone = backbone
+        self.probe = probe
+        self.dataloader = dataloader
+        self.task = task
 
-    def evaluate(self, head_mask):
+    def evaluate(self, head_mask, num_batches=20):
         # head_mask: (12, 12) binary tensor
         # returns: accuracy with this mask applied
-        ...
+        hooks = self._apply_pruning_hooks(self.backbone, head_mask)
+        correct = 0
+        total = 0
+        device = next(self.probe.parameters()).device
+        with torch.no_grad():
+            for i, (imgs, labels) in enumerate(self.dataloader):
+                if i >= num_batches:
+                    break
+                imgs, labels = imgs.to(device), labels.to(device)
+                feats = self.backbone(imgs)["cls_token"]
+                outputs = self.probe(feats)
+                preds = outputs.argmax(dim=-1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+        for h in hooks:
+            h.remove()
+        return correct / total
         
-    def run_pruning_strategy(self, strategy, n_steps=72):
+    def run_pruning_strategy(self, strategy, census, n_steps=72):
         # strategy: function that given current mask + census data
         #           returns which head to prune next
         # returns: list of (n_pruned, accuracy, flops) at each step
@@ -27,17 +48,27 @@ class PruningEvaluator:
     @staticmethod
     def random_strategy(mask, census):
         # pick a random unpruned head
-        ...
+        unpruned = torch.where(mask == 1)
+        idx = torch.randint(len(unpruned[0]), (1,)).item()
+        return unpruned[0][idx].item(), unpruned[1][idx].item()
 
     @staticmethod
     def magnitude_strategy(mask, census):
         # pick lowest magnitude unpruned head
-        ...
+        # mask out already pruned heads by setting their score to infinity
+        scores = census["activation_mag"].clone()
+        scores[mask == 0] = float("inf")  # don't pick already pruned
+        # pick the minimum
+        idx = scores.argmin()
+        return idx // 12, idx % 12
 
     @staticmethod
     def importance_strategy(mask, census):
         # pick lowest importance unpruned head
-        ...
+        scores = census["importance"].clone()
+        scores[mask == 0] = float("inf")
+        idx = scores.argmin()
+        return idx // 12, idx % 12
 
     @staticmethod
     def _apply_pruning_hooks(backbone, mask):
@@ -62,3 +93,38 @@ class PruningEvaluator:
             hooks.append(h)
 
         return hooks
+
+if __name__ == "__main__":
+    import torch
+    import numpy as np
+    from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
+    from pruning_evaluator import PruningEvaluator
+
+    device = "cuda" if torch.cuda.is_available() else "mps"
+
+    backbone = DinoV2Backbone(device=device)
+    probe = ClassificationHead(in_dim=768, num_classes=1000).to(device)
+    probe.load_state_dict(torch.load("checkpoints/probe_imagenet.pt"))
+    probe.eval()
+
+    _, val_loader = get_imagenet_loaders(batch_size=32)
+
+    # load census
+    census = dict(np.load("head_profiles.npz"))
+    census = {k: torch.tensor(v) for k, v in census.items()}
+    # rename to match strategy expectations
+    census["activation_mag"] = census.pop("activation_mag")
+    census["importance"] = census.pop("importance")
+
+    evaluator = PruningEvaluator(backbone, probe, val_loader, task="cls")
+
+    # test baseline accuracy (no pruning)
+    baseline_acc = evaluator.evaluate(torch.ones(12, 12))
+    print(f"Baseline accuracy: {baseline_acc:.4f}")
+
+    # test random strategy for 5 steps
+    results = evaluator.run_pruning_strategy(
+        PruningEvaluator.random_strategy, census, n_steps=5
+    )
+    for n_pruned, acc, flops, reward in results:
+        print(f"Pruned {n_pruned:3d} | Acc: {acc:.4f} | FLOPs: {flops:.3f} | Reward: {reward:.4f}")
