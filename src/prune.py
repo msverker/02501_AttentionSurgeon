@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+
 class PruningEvaluator:
     def __init__(self, backbone, probe, dataloader, task="cls"):
         # stores backbone, probe, eval dataloader
@@ -29,15 +30,15 @@ class PruningEvaluator:
         for h in hooks:
             h.remove()
         return correct / total
-        
+
     def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
         # strategy: function that given current mask + census data
-        #           returns (layer_idx, head_idx) to prune next    
+        #           returns (layer_idx, head_idx) to prune next
         # returns: list of (n_pruned, accuracy, flops) at each step
         all_results = []
         all_results = []
 
-        for run in range(n_runs): # repeat multiple times for averaging
+        for run in range(n_runs):  # repeat multiple times for averaging
             mask = torch.ones(12, 12)
             run_results = []
             for step in range(n_steps):
@@ -50,8 +51,8 @@ class PruningEvaluator:
             all_results.append(run_results)
 
         all_results = torch.tensor(all_results)  # (n_runs, n_steps, 3)
-        means = all_results.mean(dim=0)          # (n_steps, 3)
-        stds = all_results.std(dim=0)            # (n_steps, 3)
+        means = all_results.mean(dim=0)  # (n_steps, 3)
+        stds = all_results.std(dim=0)  # (n_steps, 3)
         return means, stds
 
     @staticmethod
@@ -95,6 +96,7 @@ class PruningEvaluator:
                 ctx = output.view(B, S, 12, head_dim)
                 ctx = ctx * mask_row.to(ctx.device).view(1, 1, 12, 1)
                 return ctx.view(B, S, 768)
+
             return hook
 
         for i, layer in enumerate(backbone.model.encoder.layer):
@@ -103,10 +105,15 @@ class PruningEvaluator:
 
         return hooks
 
+
 if __name__ == "__main__":
     import torch
     import numpy as np
-    from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
+    from baseline.backbone import (
+        DinoV2Backbone,
+        get_imagenet_loaders,
+        ClassificationHead,
+    )
 
     device = "cuda" if torch.cuda.is_available() else "mps"
 
@@ -145,17 +152,19 @@ if __name__ == "__main__":
     imp_means, _ = evaluator.run_pruning_strategy(
         PruningEvaluator.importance_strategy, census, n_steps=2, n_runs=1
     )
-    print("Done.")    
-    print("Random strategy results (first 5 steps):")
-    for step in range(5):
+    print("Done.")
+    print("Random strategy results:")
+    for step in range(len(random_means)):
         acc, flops, reward = random_means[step]
         acc_std, flops_std, reward_std = random_stds[step]
-        print(f"Step {step+1}: Acc={acc:.4f}±{acc_std:.4f}, Flops={flops:.4f}±{flops_std:.4f}, Reward={reward:.4f}±{reward_std:.4f}")
-    print("Magnitude strategy results (first 5 steps):")
-    for step in range(5):
+        print(
+            f"Step {step + 1}: Acc={acc:.4f}±{acc_std:.4f}, Flops={flops:.4f}±{flops_std:.4f}, Reward={reward:.4f}±{reward_std:.4f}"
+        )
+    print("Magnitude strategy results:")
+    for step in range(len(mag_means)):
         acc, flops, reward = mag_means[step]
-        print(f"Step {step+1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
-    print("Importance strategy results (first 5 steps):")
-    for step in range(5):
+        print(f"Step {step + 1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
+    print("Importance strategy results")
+    for step in range(len(imp_means)):
         acc, flops, reward = imp_means[step]
-        print(f"Step {step+1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
+        print(f"Step {step + 1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
