@@ -30,20 +30,29 @@ class PruningEvaluator:
             h.remove()
         return correct / total
         
-    def run_pruning_strategy(self, strategy, census, n_steps=72):
+    def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
         # strategy: function that given current mask + census data
-        #           returns which head to prune next
+        #           returns (layer_idx, head_idx) to prune next    
         # returns: list of (n_pruned, accuracy, flops) at each step
-        mask = torch.ones(12, 12)
-        results = []
-        for step in range(n_steps):
-            layer, head = strategy(mask, census)
-            mask[layer, head] = 0
-            acc = self.evaluate(mask)
-            flops_ratio = (144 - (step + 1)) / 144
-            reward = acc * flops_ratio
-            results.append((step + 1, acc, flops_ratio, reward))
-        return results
+        all_results = []
+        all_results = []
+
+        for run in range(n_runs): # repeat multiple times for averaging
+            mask = torch.ones(12, 12)
+            run_results = []
+            for step in range(n_steps):
+                layer, head = strategy(mask, census)
+                mask[layer, head] = 0
+                acc = self.evaluate(mask)
+                flops_ratio = (144 - (step + 1)) / 144
+                reward = acc * flops_ratio
+                run_results.append([acc, flops_ratio, reward])
+            all_results.append(run_results)
+
+        all_results = torch.tensor(all_results)  # (n_runs, n_steps, 3)
+        means = all_results.mean(dim=0)          # (n_steps, 3)
+        stds = all_results.std(dim=0)            # (n_steps, 3)
+        return means, stds
 
     @staticmethod
     def random_strategy(mask, census):
@@ -98,7 +107,6 @@ if __name__ == "__main__":
     import torch
     import numpy as np
     from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
-    from pruning_evaluator import PruningEvaluator
 
     device = "cuda" if torch.cuda.is_available() else "mps"
 
@@ -123,8 +131,25 @@ if __name__ == "__main__":
     print(f"Baseline accuracy: {baseline_acc:.4f}")
 
     # test random strategy for 5 steps
-    results = evaluator.run_pruning_strategy(
-        PruningEvaluator.random_strategy, census, n_steps=5
+    random_means, random_stds = evaluator.run_pruning_strategy(
+        PruningEvaluator.random_strategy, census, n_steps=72, n_runs=5
     )
-    for n_pruned, acc, flops, reward in results:
-        print(f"Pruned {n_pruned:3d} | Acc: {acc:.4f} | FLOPs: {flops:.3f} | Reward: {reward:.4f}")
+    mag_means, _ = evaluator.run_pruning_strategy(
+        PruningEvaluator.magnitude_strategy, census, n_steps=72, n_runs=1
+    )
+    imp_means, _ = evaluator.run_pruning_strategy(
+        PruningEvaluator.importance_strategy, census, n_steps=72, n_runs=1
+)
+    print("Random strategy results (first 5 steps):")
+    for step in range(5):
+        acc, flops, reward = random_means[step]
+        acc_std, flops_std, reward_std = random_stds[step]
+        print(f"Step {step+1}: Acc={acc:.4f}±{acc_std:.4f}, Flops={flops:.4f}±{flops_std:.4f}, Reward={reward:.4f}±{reward_std:.4f}")
+    print("Magnitude strategy results (first 5 steps):")
+    for step in range(5):
+        acc, flops, reward = mag_means[step]
+        print(f"Step {step+1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
+    print("Importance strategy results (first 5 steps):")
+    for step in range(5):
+        acc, flops, reward = imp_means[step]
+        print(f"Step {step+1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
