@@ -1,11 +1,15 @@
 import torch
 import torch.nn as nn
-from loaders import ADE20KDataset
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from transformers import AutoImageProcessor, AutoModel
 
-from loaders import get_cifar100_loaders, get_ade20k_loaders, get_imagenet_loaders
+from baseline.loaders import (
+    get_ade20k_loaders,
+    get_cifar100_loaders,
+    get_imagenet_loaders,
+)
+
 
 # -----------------------------
 # Backbone with head masking
@@ -30,7 +34,7 @@ class DinoV2Backbone(nn.Module):
             x,
             head_mask=head_mask,
             output_attentions=output_attentions,
-            output_hidden_states=False
+            output_hidden_states=False,
         )
         last_hidden_state = outputs.last_hidden_state
         cls_token = last_hidden_state[:, 0, :]
@@ -44,7 +48,7 @@ class DinoV2Backbone(nn.Module):
         if output_attentions:
             # tuple of (num_layers,) each (batch, num_heads, seq_len, seq_len)
             result["attentions"] = outputs.attentions
-        
+
         return result
 
 
@@ -176,22 +180,17 @@ def evaluate(backbone, head, loader):
 # -----------------------------
 # Feature caching (IMPORTANT for RL)
 # -----------------------------
-def cache_features(backbone, loader):
-    device = next(backbone.parameters()).device
-
-    features = []
-    labels = []
-
+def cache_features(backbone, loader, max_batches=None):
+    features, labels = [], []
     backbone.eval()
-
     with torch.no_grad():
-        for imgs, y in loader:
-            imgs = imgs.to(device)
+        for i, (imgs, y) in enumerate(loader):
+            if max_batches and i >= max_batches:
+                break
+            imgs = imgs.to(next(backbone.parameters()).device)
             feats = backbone(imgs)["cls_token"].cpu()
-
             features.append(feats)
             labels.append(y)
-
     return torch.cat(features), torch.cat(labels)
 
 
