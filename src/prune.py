@@ -133,17 +133,17 @@ if __name__ == "__main__":
     # test random strategy for 5 steps
     print("Testing random strategy for 2 steps...")
     random_means, random_stds = evaluator.run_pruning_strategy(
-        PruningEvaluator.random_strategy, census, n_steps=72, n_runs=2
+        PruningEvaluator.random_strategy, census, n_steps=2, n_runs=2
     )
     print("Done.")
-    print("Testing magnitude strategy for 1 step...")
+    print("Testing magnitude strategy for 2 step...")
     mag_means, _ = evaluator.run_pruning_strategy(
-        PruningEvaluator.magnitude_strategy, census, n_steps=72, n_runs=1
+        PruningEvaluator.magnitude_strategy, census, n_steps=2, n_runs=1
     )
     print("Done.")
-    print("Testing importance strategy for 1 step...")
+    print("Testing importance strategy for 2 step...")
     imp_means, _ = evaluator.run_pruning_strategy(
-        PruningEvaluator.importance_strategy, census, n_steps=72, n_runs=1
+        PruningEvaluator.importance_strategy, census, n_steps=2, n_runs=1
     )
     print("Done.")    
     print("Random strategy results (first 5 steps):")
