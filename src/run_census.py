@@ -1,7 +1,10 @@
+import gc
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
+
+from baseline.backbone import ClassificationHead, DinoV2Backbone, get_imagenet_loaders
 from head_census import AttentionCensus
 
 device = "cuda"
@@ -18,10 +21,13 @@ census = AttentionCensus(backbone)
 print("Running task-agnostic metrics...")
 results = census.run(val_loader, num_batches=200)
 
+del val_loader
 torch.cuda.empty_cache()
+gc.collect()
 
-print("Running importance scoring...")
-importance = census.compute_importance(val_loader, probe, loss_fn, task="cls", num_batches=100)
+_, val_loader_small = get_imagenet_loaders(batch_size=4)
+importance = census.compute_importance(val_loader_small, probe, loss_fn, task="cls", num_batches=400)
+
 results["importance_cls"] = importance
 
 np.savez(
