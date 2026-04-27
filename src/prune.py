@@ -85,7 +85,7 @@ class PruningEvaluator:
         idx = scores.argmin()
         return idx // 12, idx % 12
 
-    @staticmethod
+
     def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
         all_results = []
 
@@ -140,46 +140,43 @@ class PruningEvaluator:
 
         return hooks
     
-class RLAgentStrategy:
+class PPOAgentStrategy:
     def __init__(self, policy_network, device="cuda"):
         self.policy_network = policy_network
         self.policy_network.eval()
         self.device = device
-        # We track baseline accuracy to feed the agent's state
+        # Track accuracy for the state vector
         self.current_acc = 1.0 
 
     def __call__(self, mask, census):
-        """
-        Matches the signature: strategy(mask, census) -> (layer, head)
-        """
-        # 1. Calculate current FLOPs based on the mask
+        """Matches the signature: strategy(mask, census) -> (layer, head)"""
+        # 1. Calculate current FLOPs
         current_flops = mask.sum().item() / 144.0
         
         # 2. Build the state vector [Mask (144) | Acc (1) | FLOPs (1)]
-        # (Adjust this if your RL agent's state dimension is different)
         state = torch.cat([
-            mask.flatten(), 
-            torch.tensor([self.current_acc, current_flops])
-        ]).to(self.device)
+            mask.flatten().to(self.device), 
+            torch.tensor([self.current_acc, current_flops]).to(self.device)
+        ])
         
-        # 3. Get Q-values from the agent
+        valid_mask = (mask.flatten() == 1.0).to(self.device)
+        
+        # 3. Get action probabilities from the Actor network
         with torch.no_grad():
-            q_values = self.policy_network(state)
+            action_logits = self.policy_network.actor(state)
             
-        # 4. Action Masking: Prevent picking already pruned heads
-        flat_mask = mask.flatten().to(self.device)
-        q_values[flat_mask == 0] = -float('inf')
-        
-        # 5. Select the best valid action
-        action_idx = torch.argmax(q_values).item()
-        
+            # Mask out already-pruned heads
+            action_logits[~valid_mask] = -1e8
+            
+            # For EVALUATION, we don't sample randomly. We pick the absolute best action.
+            action_idx = torch.argmax(action_logits).item()
+            
         layer = action_idx // 12
         head = action_idx % 12
         
         return layer, head
         
     def update_acc(self, new_acc):
-        """Called after evaluation to update the agent's internal state"""
         self.current_acc = new_acc
 
 
@@ -187,6 +184,7 @@ if __name__ == "__main__":
     # quick test to verify pruning hooks work as intended
     import torch
     import numpy as np
+    from pruning_agent import PPOActorCritic
     from baseline.backbone import (
         DinoV2Backbone,
         get_imagenet_loaders,
@@ -211,16 +209,15 @@ if __name__ == "__main__":
 
     evaluator = PruningEvaluator(backbone, probe, val_loader, task="cls")
 
-    from pruning_agent import PruningDQN 
 
     print("Loading trained RL Agent...")
     # 2. Initialize the empty brain
-    agent_net = PruningDQN(input_dim=146, action_dim=144).to(device)
+    agent_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
     # 3. Load the trained weights
-    agent_net.load_state_dict(torch.load("checkpoints/rl_agent.pt", map_location=device))
+    agent_net.load_state_dict(torch.load("checkpoints/rl_agent_ppo.pt", map_location=device))
     
     # 4. Wrap it in your strategy class
-    rl_strategy = RLAgentStrategy(agent_net, device=device)
+    rl_strategy = PPOAgentStrategy(agent_net, device=device)
 
     # 5. Run the evaluation
     print("Testing RL Agent strategy for 2 steps...")

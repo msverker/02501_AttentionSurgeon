@@ -1,7 +1,8 @@
 import torch
 import numpy as np
 from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
-from prune import PruningEvaluator
+from pruning_agent import PPOActorCritic
+from prune import PruningEvaluator, PPOAgentStrategy
 
 device = "cuda" if torch.cuda.is_available() else "mps"
 
@@ -53,6 +54,18 @@ imp_means, imp_stds = evaluator.run_pruning_strategy(
 )
 print("Done.")
 
+print("Loading PPO RL agent...")
+ppo_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
+# Load the weights you saved after training
+ppo_net.load_state_dict(torch.load("checkpoints/rl_agent_ppo.pt", map_location=device))
+ppo_strategy = PPOAgentStrategy(ppo_net, device=device)
+
+print("Running RL (PPO) strategy...")
+rl_means, rl_stds = evaluator.run_pruning_strategy(
+    ppo_strategy, census, n_steps=72, n_runs=1
+)
+print("Done.")
+
 # save
 np.savez(
     "results/baseline_pruning_cls_results.npz",
@@ -63,5 +76,7 @@ np.savez(
     magnitude_stds=mag_stds.numpy(),
     importance_means=imp_means.numpy(),
     importance_stds=imp_stds.numpy(),
+    rl_means=rl_means.numpy(),
+    rl_stds=rl_stds.numpy()
 )
 print("Saved baseline_pruning_cls_results.npz")
