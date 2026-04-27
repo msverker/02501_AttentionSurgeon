@@ -54,29 +54,34 @@ class PruningEvaluator:
         means = all_results.mean(dim=0)  # (n_steps, 3)
         stds = all_results.std(dim=0, correction=0)  # (n_steps, 3)
         return means, stds
-
+    
     @staticmethod
-    def random_strategy(mask, census):
-        # pick a random unpruned head
-        unpruned = torch.where(mask == 1)
+    def random_strategy(mask, census, max_per_layer=6):
+        valid_mask = mask.clone()
+        for l in range(12):
+            if (mask[l] == 0).sum() >= max_per_layer:
+                valid_mask[l] = 0
+        unpruned = torch.where(valid_mask == 1)
         idx = torch.randint(len(unpruned[0]), (1,)).item()
         return unpruned[0][idx].item(), unpruned[1][idx].item()
-
+    
     @staticmethod
-    def magnitude_strategy(mask, census):
-        # pick lowest magnitude unpruned head
-        # mask out already pruned heads by setting their score to infinity
-        scores = census["activation_mag"].clone()
-        scores[mask == 0] = float("inf")  # don't pick already pruned
-        # pick the minimum
+    def importance_strategy(mask, census, max_per_layer=6):
+        scores = census["importance"].clone()
+        scores[mask == 0] = float("inf")
+        for layer in range(12):
+            if (mask[layer] == 0).sum() >= max_per_layer:
+                scores[layer] = float("inf")
         idx = scores.argmin()
         return idx // 12, idx % 12
 
     @staticmethod
-    def importance_strategy(mask, census):
-        # pick lowest importance unpruned head
-        scores = census["importance"].clone()
+    def magnitude_strategy(mask, census, max_per_layer=6):
+        scores = census["activation_mag"].clone()
         scores[mask == 0] = float("inf")
+        for layer in range(12):
+            if (mask[layer] == 0).sum() >= max_per_layer:
+                scores[layer] = float("inf")
         idx = scores.argmin()
         return idx // 12, idx % 12
 
@@ -107,6 +112,7 @@ class PruningEvaluator:
 
 
 if __name__ == "__main__":
+    # quick test to verify pruning hooks work as intended
     import torch
     import numpy as np
     from baseline.backbone import (
