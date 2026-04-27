@@ -118,7 +118,7 @@ if __name__ == "__main__":
     _, val_loader = get_imagenet_loaders(batch_size=32)
 
     # load census
-    census = dict(np.load("head_profiles.npz"))
+    census = dict(np.load("results/head_profiles.npz"))
     census = {k: torch.tensor(v) for k, v in census.items()}
     # rename to match strategy expectations
     census["activation_mag"] = census.pop("activation_mag")
