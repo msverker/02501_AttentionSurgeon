@@ -86,6 +86,36 @@ class PruningEvaluator:
         return idx // 12, idx % 12
 
     @staticmethod
+    def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
+        all_results = []
+
+        for run in range(n_runs):  
+            mask = torch.ones(12, 12)
+            run_results = []
+            
+            for step in range(n_steps):
+                layer, head = strategy(mask, census)
+                mask[layer, head] = 0
+                acc = self.evaluate(mask)
+                
+                # --- ADD THIS LINE ---
+                # Feed the new accuracy back to the RL agent for its next state
+                if hasattr(strategy, 'update_acc'):
+                    strategy.update_acc(acc)
+                # ---------------------
+                
+                flops_ratio = (144 - (step + 1)) / 144
+                reward = acc * flops_ratio
+                run_results.append([acc, flops_ratio, reward])
+                
+            all_results.append(run_results)
+
+        all_results = torch.tensor(all_results)  
+        means = all_results.mean(dim=0)  
+        stds = all_results.std(dim=0, correction=0)  
+        return means, stds
+
+    @staticmethod
     def _apply_pruning_hooks(backbone, mask):
         """
         mask: (12, 12) binary tensor — 0 = prune, 1 = keep
@@ -109,6 +139,48 @@ class PruningEvaluator:
             hooks.append(h)
 
         return hooks
+    
+class RLAgentStrategy:
+    def __init__(self, policy_network, device="cuda"):
+        self.policy_network = policy_network
+        self.policy_network.eval()
+        self.device = device
+        # We track baseline accuracy to feed the agent's state
+        self.current_acc = 1.0 
+
+    def __call__(self, mask, census):
+        """
+        Matches the signature: strategy(mask, census) -> (layer, head)
+        """
+        # 1. Calculate current FLOPs based on the mask
+        current_flops = mask.sum().item() / 144.0
+        
+        # 2. Build the state vector [Mask (144) | Acc (1) | FLOPs (1)]
+        # (Adjust this if your RL agent's state dimension is different)
+        state = torch.cat([
+            mask.flatten(), 
+            torch.tensor([self.current_acc, current_flops])
+        ]).to(self.device)
+        
+        # 3. Get Q-values from the agent
+        with torch.no_grad():
+            q_values = self.policy_network(state)
+            
+        # 4. Action Masking: Prevent picking already pruned heads
+        flat_mask = mask.flatten().to(self.device)
+        q_values[flat_mask == 0] = -float('inf')
+        
+        # 5. Select the best valid action
+        action_idx = torch.argmax(q_values).item()
+        
+        layer = action_idx // 12
+        head = action_idx % 12
+        
+        return layer, head
+        
+    def update_acc(self, new_acc):
+        """Called after evaluation to update the agent's internal state"""
+        self.current_acc = new_acc
 
 
 if __name__ == "__main__":
@@ -138,6 +210,30 @@ if __name__ == "__main__":
     census["importance"] = census.pop("importance")
 
     evaluator = PruningEvaluator(backbone, probe, val_loader, task="cls")
+
+    from pruning_agent import PruningDQN 
+
+    print("Loading trained RL Agent...")
+    # 2. Initialize the empty brain
+    agent_net = PruningDQN(input_dim=146, action_dim=144).to(device)
+    # 3. Load the trained weights
+    agent_net.load_state_dict(torch.load("checkpoints/rl_agent.pt", map_location=device))
+    
+    # 4. Wrap it in your strategy class
+    rl_strategy = RLAgentStrategy(agent_net, device=device)
+
+    # 5. Run the evaluation
+    print("Testing RL Agent strategy for 2 steps...")
+    rl_means, _ = evaluator.run_pruning_strategy(
+        rl_strategy, census, n_steps=2, n_runs=1
+    )
+    print("Done.")
+
+    # 6. Print the results
+    print("RL Agent strategy results:")
+    for step in range(len(rl_means)):
+        acc, flops, reward = rl_means[step]
+        print(f"Step {step + 1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
 
     # test baseline accuracy (no pruning)
     baseline_acc = evaluator.evaluate(torch.ones(12, 12))
