@@ -52,7 +52,7 @@ class PruningEvaluator:
 
         all_results = torch.tensor(all_results)  # (n_runs, n_steps, 3)
         means = all_results.mean(dim=0)  # (n_steps, 3)
-        stds = all_results.std(dim=0)  # (n_steps, 3)
+        stds = all_results.std(dim=0, correction=0)  # (n_steps, 3)
         return means, stds
 
     @staticmethod
