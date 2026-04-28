@@ -1,31 +1,33 @@
+import gc
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from torch.utils.data import DataLoader
-from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
+
+from baseline.backbone import ClassificationHead, DinoV2Backbone, get_imagenet_loaders
 from head_census import AttentionCensus
 
 device = "cuda"
 backbone = DinoV2Backbone(device=device)
-_, val_loader = get_imagenet_loaders(batch_size=32)
+_, val_loader = get_imagenet_loaders(batch_size=16)
 
-# load pretrained probe
 probe = ClassificationHead(in_dim=768, num_classes=1000).to(device)
-probe.load_state_dict(torch.load("checkpoints/probe_imagenet.pt"))
+probe.load_state_dict(torch.load("checkpoints/probe_imagenet.pt", map_location=device))
 probe.eval()
 
 loss_fn = nn.CrossEntropyLoss()
-
-# run census
 census = AttentionCensus(backbone)
-print("Running task-agnostic metrics...")
-results = census.run(val_loader, num_batches=100)
 
-print("Running importance scoring...")
-del results  # free memory first
+print("Running task-agnostic metrics...")
+results = census.run(val_loader, num_batches=200)
+
+del val_loader
 torch.cuda.empty_cache()
-results = census.run(val_loader, num_batches=100)
-importance = census.compute_importance(val_loader, probe, loss_fn, task="cls", num_batches=50)
+gc.collect()
+
+_, val_loader_small = get_imagenet_loaders(batch_size=4)
+importance = census.compute_importance(val_loader_small, probe, loss_fn, task="cls", num_batches=400)
+
 results["importance_cls"] = importance
 
 np.savez(
@@ -33,6 +35,7 @@ np.savez(
     entropy=results["entropy"].numpy(),
     distance=results["distance"].numpy(),
     activation_mag=results["magnitude"].numpy(),
+    cls_query_entropy=results["cls_entropy"].numpy(),
     importance=results["importance_cls"].detach().numpy(),
 )
 print("Saved head_profiles.npz")

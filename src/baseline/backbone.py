@@ -1,14 +1,13 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-from transformers import AutoImageProcessor, AutoModel
+from transformers import AutoModel
 
 from baseline.loaders import (
-    get_ade20k_loaders,
     get_cifar100_loaders,
-    get_imagenet_loaders,
+    get_ade20k_dataloaders,
+    get_coco_dataloaders,
 )
+from tqdm import tqdm
 
 
 # -----------------------------
@@ -69,7 +68,7 @@ class ClassificationHead(nn.Module):
 class ADE20KHead(nn.Module):
     def __init__(self, in_dim=768, num_classes=150):
         super().__init__()
-        self.conv = nn.Conv2d(in_dim, num_classes, kernel_size=1)
+        self.conv = nn.Conv2d(in_dim, num_classes, kernel_size=3, padding=1)
 
     def forward(self, feats):
         x = feats["patch_tokens"]
@@ -84,8 +83,10 @@ class CocoHead(nn.Module):
     def __init__(self, in_dim=768, num_classes=80):
         super().__init__()
         self.conv = nn.Conv2d(in_dim, 256, 3, padding=1)
+
         self.cls_head = nn.Conv2d(256, num_classes, 1)
         self.box_head = nn.Conv2d(256, 4, 1)
+        self.obj_head = nn.Conv2d(256, 1, 1)  # NEW
 
     def forward(self, feats):
         x = feats["patch_tokens"]
@@ -94,9 +95,12 @@ class CocoHead(nn.Module):
 
         x = x.permute(0, 2, 1).reshape(B, C, H, W)
         x = torch.relu(self.conv(x))
+
         cls_logits = self.cls_head(x)
         box_preds = self.box_head(x)
-        return cls_logits, box_preds
+        obj_logits = self.obj_head(x)
+
+        return cls_logits, box_preds, obj_logits
 
 
 # -----------------------------
@@ -134,26 +138,140 @@ def train_classification(backbone, head, train_loader, val_loader, epochs=5):
 def train_segmentation(backbone, head, loader, epochs=5):
     device = next(head.parameters()).device
     optimizer = torch.optim.Adam(head.parameters(), lr=1e-3)
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss(ignore_index=-1)
     backbone.eval()
     head.train()
     for epoch in range(epochs):
         total_loss = 0
-        for imgs, masks in loader:
+        pbar = tqdm(loader, desc=f"Epoch {epoch}")
+        for batch in pbar:
+            imgs, masks = batch["image"], batch["mask"]
             imgs = imgs.to(device)
             masks = masks.to(device)  # (B, H, W)
             with torch.no_grad():
                 feats = backbone(imgs)
             logits = head(feats)  # (B, C, h, w)
             logits = nn.functional.interpolate(
-                logits, size=masks.shape[-2:], mode="bilinear"
+                logits, size=masks.shape[-2:], mode="bilinear", align_corners=False
             )
             loss = loss_fn(logits, masks.long())
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        print(f"[ADE20K] Epoch {epoch} Loss: {total_loss:.4f}")
+            avg_loss = total_loss / len(loader)
+        print(f"[ADE20K] Epoch {epoch} Loss: {avg_loss:.4f}")
+
+    return head
+
+
+def build_targets(targets, grid_size=14, num_classes=80, device="cuda"):
+    """
+    Convert COCO targets into grid targets
+    """
+    B = len(targets)
+
+    obj_target = torch.zeros((B, 1, grid_size, grid_size), device=device)
+    cls_target = torch.zeros((B, grid_size, grid_size), dtype=torch.long, device=device)
+    box_target = torch.zeros((B, 4, grid_size, grid_size), device=device)
+
+    for b, t in enumerate(targets):
+        boxes = t["boxes"]  # (N, 4) in COCO format [x, y, w, h]
+        labels = t["labels"]
+
+        for box, label in zip(boxes, labels):
+            x, y, w, h = box
+
+            # normalize (since image is 224x224)
+            cx = (x + w / 2) / 224.0
+            cy = (y + h / 2) / 224.0
+
+            gx = int(cx * grid_size)
+            gy = int(cy * grid_size)
+
+            if gx >= grid_size or gy >= grid_size:
+                continue
+
+            obj_target[b, 0, gy, gx] = 1.0
+            cls_target[b, gy, gx] = label
+
+            box_target[b, :, gy, gx] = torch.tensor(
+                [cx, cy, w / 224.0, h / 224.0], device=device
+            )
+
+    return obj_target, cls_target, box_target
+
+
+def train_detection(backbone, head, train_loader, val_loader, epochs=5, device="cuda"):
+    backbone.eval()  # frozen
+    head.train()
+
+    optimizer = torch.optim.Adam(head.parameters(), lr=1e-4)
+    for epoch in range(epochs):
+        total_loss = 0
+
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+
+        for images, targets in pbar:
+            images = images.to(device)
+            # targets = targets["boxes"]
+
+            # forward
+            with torch.no_grad():
+                feats = backbone(images)
+
+            cls_logits, box_preds, obj_logits = head(feats)
+
+            grid_size = cls_logits.shape[-1]
+
+            obj_t, cls_t, box_t = build_targets(
+                targets, grid_size=grid_size, device=device
+            )
+
+            # losses
+            obj_loss = nn.functional.binary_cross_entropy_with_logits(obj_logits, obj_t)
+
+            cls_loss = nn.functional.cross_entropy(
+                cls_logits.permute(0, 2, 3, 1).reshape(-1, 80),
+                cls_t.view(-1),
+                reduction="mean",
+            )
+
+            box_loss = nn.functional.l1_loss(box_preds, box_t)
+
+            loss = obj_loss + cls_loss + box_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            avg_loss = total_loss / len(train_loader)
+
+        print(f"Epoch {epoch + 1} | Avg loss: {avg_loss:.4f}")
+        # print(obj_loss.item(), cls_loss.item(), box_loss.item())
+
+        # evaluate_detection(backbone, head, val_loader, device)
+    return head
+
+
+def evaluate_detection(backbone, head, val_loader, device="cuda"):
+    backbone.eval()
+    head.eval()
+
+    total_obj = 0
+
+    with torch.no_grad():
+        for images, targets in val_loader:
+            images = images.to(device)
+
+            feats = backbone(images)
+            cls_logits, box_preds, obj_logits = head(feats)
+
+            preds = torch.sigmoid(obj_logits) > 0.5
+            total_obj += preds.sum().item()
+
+    print(f"Detected objects (rough): {total_obj}")
 
 
 def evaluate(backbone, head, loader):
@@ -180,17 +298,22 @@ def evaluate(backbone, head, loader):
 # -----------------------------
 # Feature caching (IMPORTANT for RL)
 # -----------------------------
-def cache_features(backbone, loader, max_batches=None):
-    features, labels = [], []
+def cache_features(backbone, loader):
+    device = next(backbone.parameters()).device
+
+    features = []
+    labels = []
+
     backbone.eval()
+
     with torch.no_grad():
-        for i, (imgs, y) in enumerate(loader):
-            if max_batches and i >= max_batches:
-                break
-            imgs = imgs.to(next(backbone.parameters()).device)
+        for imgs, y in loader:
+            imgs = imgs.to(device)
             feats = backbone(imgs)["cls_token"].cpu()
+
             features.append(feats)
             labels.append(y)
+
     return torch.cat(features), torch.cat(labels)
 
 
@@ -209,14 +332,20 @@ if __name__ == "__main__":
             "train_classification",
             "train_segmentation",
             "train_detection",
-            "test-plot",
         ],
         help="what to do when running the script (default: %(default)s)",
     )
 
     args = parser.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
+    print(f"Using device: {device}")
     backbone = DinoV2Backbone(device)
 
     if args.mode == "train_classification":
@@ -229,6 +358,28 @@ if __name__ == "__main__":
     elif args.mode == "train_segmentation":
         head = ADE20KHead().to(device)
 
-        train_loader, val_loader = get_ade20k_loaders()
+        train_loader, val_loader = get_ade20k_dataloaders(
+            root="./data/archive/",
+            image_size=(224, 224),
+            batch_size=32,
+            num_workers=4,
+        )
 
-        train_segmentation(backbone, head, train_loader, epochs=5)
+        head = train_segmentation(backbone, head, train_loader, epochs=20)
+        torch.save(
+            head.state_dict(),
+            "/work3/s216143/02501_AttentionSurgeon/src/checkpoints/ade20k_head.pth",
+        )
+
+    elif args.mode == "train_detection":
+        head = CocoHead().to(device)
+
+        train_loader, val_loader = get_coco_dataloaders(batch_size=32)
+
+        head = train_detection(
+            backbone, head, train_loader, val_loader, epochs=20, device=device
+        )
+        torch.save(
+            head.state_dict(),
+            "/work3/s216143/02501_AttentionSurgeon/src/checkpoints/coco_head.pth",
+        )

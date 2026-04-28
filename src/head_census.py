@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+from baseline.backbone import build_targets
 
 
 class AttentionCensus:
@@ -57,8 +59,24 @@ class AttentionCensus:
 
         return torch.stack(accum_distance, dim=0)  # (num_layers, num_heads)
 
+    def compute_cls_entropy(self, attentions):
+        # CLS token as query (row 0), attending to all patch tokens
+        # Low entropy = focused CLS attention = CLS-aggregator head
+        accum = []
+        for attn in attentions:
+            cls_attn = attn[
+                :, :, 0, 1:
+            ]  # (B, num_heads, 256) — CLS attending to patches
+            cls_attn = cls_attn / cls_attn.sum(dim=-1, keepdim=True)  # renormalize
+            entropy = -torch.sum(
+                cls_attn * torch.log(cls_attn + 1e-8), dim=-1
+            )  # (B, num_heads)
+            entropy = entropy.mean(dim=0)  # (num_heads,)
+            accum.append(entropy)
+        return torch.stack(accum, dim=0)  # (num_layers, num_heads)
+
     @torch.no_grad()
-    def run(self, dataloader, num_batches=50):
+    def run(self, dataloader, num_batches=50, task="cls"):
         self.backbone.eval()
 
         hooks = []
@@ -68,6 +86,7 @@ class AttentionCensus:
         entropy_accum = torch.zeros(self.num_layers, self.num_heads)
         distance_accum = torch.zeros(self.num_layers, self.num_heads)
         magnitude_accum = torch.zeros(self.num_layers, self.num_heads)
+        cls_entropy_accum = torch.zeros(self.num_layers, self.num_heads)
 
         def make_hook(layer_idx):
             def hook(module, input, output):
@@ -90,22 +109,26 @@ class AttentionCensus:
             h = layer.attention.attention.register_forward_hook(make_hook(i))
             hooks.append(h)
 
-        for i, (imgs, _) in enumerate(dataloader):
+        for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break
+            if task == "seg":
+                imgs, _ = batch["image"], batch["mask"]
+            elif task == "det":
+                imgs, _ = batch
+            else:
+                imgs, _ = batch
+
             imgs = imgs.to(self.backbone.device)
             outputs = self.backbone(imgs, output_attentions=True)
             attentions = outputs["attentions"]  # tuple of 12 x (B, 12, 197, 197)
-
-            print(
-                type(attentions), len(attentions) if attentions is not None else "None"
-            )
 
             for layer_idx in range(self.num_layers):
                 magnitude_accum[layer_idx] += buffer[layer_idx].cpu()
 
             entropy_accum += self.compute_entropy(attentions).cpu()
             distance_accum += self.compute_distance(attentions).cpu()
+            cls_entropy_accum += self.compute_cls_entropy(attentions).cpu()
 
         for h in hooks:
             h.remove()
@@ -114,9 +137,12 @@ class AttentionCensus:
             "entropy": entropy_accum / num_batches,
             "distance": distance_accum / num_batches,
             "magnitude": magnitude_accum / num_batches,
+            "cls_entropy": cls_entropy_accum / num_batches,
         }
 
-    def compute_importance(self, dataloader, probe, loss_fn, task="cls", num_batches=50):
+    def compute_importance(
+        self, dataloader, probe, loss_fn, task="cls", num_batches=50
+    ):
         importance_accum = torch.zeros(self.num_layers, self.num_heads)
         attn_buffer = {}
         grad_buffer = {}
@@ -130,26 +156,70 @@ class AttentionCensus:
             def hook(module, input, output):
                 attn = output[1]
                 attn_buffer[layer_idx] = attn
-                attn.register_hook(lambda grad: grad_buffer.__setitem__(layer_idx, grad))
+                attn.register_hook(
+                    lambda grad: grad_buffer.__setitem__(layer_idx, grad)
+                )
+
             return hook
 
         for i, layer in enumerate(self.backbone.model.encoder.layer):
             h = layer.attention.attention.register_forward_hook(make_hook(i))
             hooks.append(h)
 
-        for i, (imgs, labels) in enumerate(dataloader):
+        for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break
-            imgs = imgs.to(self.backbone.device)
-            labels = labels.to(self.backbone.device)
+
+            if task == "det":
+                imgs, targets = batch
+                imgs = imgs.to(self.backbone.device)
+            elif task == "seg":
+                imgs, labels = (
+                    batch["image"].to(self.backbone.device),
+                    batch["mask"].to(self.backbone.device),
+                )
+            else:
+                imgs, labels = batch
+                imgs = imgs.to(self.backbone.device)
+                labels = labels.to(self.backbone.device)
 
             self.backbone.model.zero_grad()
             outputs = self.backbone(imgs, output_attentions=True)
 
             if task == "cls":
                 logits = probe(outputs)
+                loss = loss_fn(logits, labels)
+            elif task == "seg":
+                logits = probe(outputs)
+                logits = nn.functional.interpolate(
+                    logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
+                )
+                if labels.dim() == 4:
+                    labels = labels.squeeze(1)
+                loss = loss_fn(logits, labels.long())
+            elif task == "det":
+                cls_logits, box_preds, obj_logits = probe(outputs)
 
-            loss = loss_fn(logits, labels)
+                grid_size = cls_logits.shape[-1]
+
+                obj_t, cls_t, box_t = build_targets(
+                    targets, grid_size=grid_size, device=self.backbone.device
+                )
+
+                obj_loss = nn.functional.binary_cross_entropy_with_logits(
+                    obj_logits, obj_t
+                )
+
+                cls_loss = nn.functional.cross_entropy(
+                    cls_logits.permute(0, 2, 3, 1).reshape(-1, 80),
+                    cls_t.view(-1),
+                    reduction="mean",
+                )
+
+                box_loss = nn.functional.l1_loss(box_preds, box_t)
+
+                loss = obj_loss + cls_loss + box_loss
+
             loss.backward()
 
             for layer_idx in range(self.num_layers):
@@ -169,18 +239,26 @@ class AttentionCensus:
 
 
 if __name__ == "__main__":
-    from backbone import (
-        DinoV2Backbone,
-        get_cifar100_loaders,
-        ClassificationHead,
-        cache_features,
-    )
     import torch.nn as nn
-    from torch.utils.data import TensorDataset, DataLoader, Subset
+    from torch.utils.data import DataLoader, Subset, TensorDataset
     from torchvision import datasets, transforms
     from transformers import AutoImageProcessor
 
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    from baseline.backbone import (
+        ClassificationHead,
+        DinoV2Backbone,
+        cache_features,
+        get_cifar100_loaders,
+    )
+   
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
+    
     backbone = DinoV2Backbone(device=device)
 
     # build a small val subset directly
