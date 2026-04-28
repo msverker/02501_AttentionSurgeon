@@ -57,12 +57,20 @@ class PruningEvaluator:
     
     @staticmethod
     def random_strategy(mask, census, max_per_layer=6):
-        valid_mask = mask.clone()
-        for l in range(12):
-            if (mask[l] == 0).sum() >= max_per_layer:
-                valid_mask[l] = 0
+        # 1. Pull the tiny 12x12 mask to the CPU once to prevent sync bottlenecks
+        mask_cpu = mask.cpu()
+        valid_mask = mask_cpu.clone()
+        
+        # 2. Vectorize the loop: Count pruned heads per layer all at once
+        pruned_counts = (mask_cpu == 0).sum(dim=1)
+        
+        # 3. Mask out any layers that hit the maximum limit
+        valid_mask[pruned_counts >= max_per_layer] = 0
+        
+        # 4. Find valid coordinates and pick one randomly
         unpruned = torch.where(valid_mask == 1)
         idx = torch.randint(len(unpruned[0]), (1,)).item()
+        
         return unpruned[0][idx].item(), unpruned[1][idx].item()
     
     @staticmethod
@@ -126,16 +134,15 @@ class PruningEvaluator:
 
         def make_hook(layer_idx, mask_row):
             def hook(module, input, output):
-                # output is (B, seq_len, 768)
-                B, S, _ = output.shape
-                ctx = output.view(B, S, 12, head_dim)
+                ctx = output[0]  # (B, S, 768)
+                B, S, _ = ctx.shape
+                ctx = ctx.view(B, S, 12, head_dim)
                 ctx = ctx * mask_row.to(ctx.device).view(1, 1, 12, 1)
-                return ctx.view(B, S, 768)
-
+                return (ctx.view(B, S, 768),) + output[1:]
             return hook
 
         for i, layer in enumerate(backbone.model.encoder.layer):
-            h = layer.attention.output.register_forward_hook(make_hook(i, mask[i]))
+            h = layer.attention.attention.register_forward_hook(make_hook(i, mask[i]))
             hooks.append(h)
 
         return hooks

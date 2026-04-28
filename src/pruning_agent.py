@@ -283,7 +283,7 @@ if __name__ == "__main__":
         device=device
     )
 
-    trained_policy = train_ppo_agent(env, episodes=5)
+    trained_policy = train_ppo_agent(env, episodes=500)
     print("Training complete.")
     
     import os
