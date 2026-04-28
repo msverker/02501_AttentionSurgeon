@@ -108,36 +108,6 @@ class PruningEvaluator:
 
         return layer, head
 
-
-    def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
-        all_results = []
-
-        for run in range(n_runs):  
-            mask = torch.ones(12, 12)
-            run_results = []
-            
-            for step in range(n_steps):
-                layer, head = strategy(mask, census)
-                mask[layer, head] = 0
-                acc = self.evaluate(mask)
-                
-                # --- ADD THIS LINE ---
-                # Feed the new accuracy back to the RL agent for its next state
-                if hasattr(strategy, 'update_acc'):
-                    strategy.update_acc(acc)
-                # ---------------------
-                
-                flops_ratio = (144 - (step + 1)) / 144
-                reward = acc * flops_ratio
-                run_results.append([acc, flops_ratio, reward])
-                
-            all_results.append(run_results)
-
-        all_results = torch.tensor(all_results)  
-        means = all_results.mean(dim=0)  
-        stds = all_results.std(dim=0, correction=0)  
-        return means, stds
-
     @staticmethod
     def _apply_pruning_hooks(backbone, mask):
         """
