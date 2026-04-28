@@ -37,8 +37,18 @@ def train_cls(backbone, device, epochs=5):
     print("Caching val features...")
     val_feats, val_labels = cache_features(backbone, val_loader)
 
-    train_cached = DataLoader(TensorDataset(train_feats, train_labels), batch_size=256, shuffle=True, num_workers=4)
-    val_cached = DataLoader(TensorDataset(val_feats, val_labels), batch_size=256, shuffle=False, num_workers=4)
+    train_cached = DataLoader(
+        TensorDataset(train_feats, train_labels),
+        batch_size=256,
+        shuffle=True,
+        num_workers=4,
+    )
+    val_cached = DataLoader(
+        TensorDataset(val_feats, val_labels),
+        batch_size=256,
+        shuffle=False,
+        num_workers=4,
+    )
 
     probe = ClassificationHead(in_dim=768, num_classes=1000).to(device)
     optimizer = torch.optim.Adam(probe.parameters(), lr=1e-3)
@@ -64,7 +74,9 @@ def train_cls(backbone, device, epochs=5):
                 preds = probe(feats).argmax(dim=1)
                 correct += (preds == labels).sum().item()
                 total += labels.size(0)
-        print(f"Epoch {epoch} | Loss: {total_loss:.2f} | Val Acc: {correct/total:.4f}")
+        print(
+            f"Epoch {epoch} | Loss: {total_loss:.2f} | Val Acc: {correct / total:.4f}"
+        )
 
     return probe
 
@@ -85,7 +97,9 @@ def train_seg(backbone, device, epochs=5):
             with torch.no_grad():
                 feats = backbone(imgs)
             logits = probe(feats)
-            logits = nn.functional.interpolate(logits, size=masks.shape[-2:], mode="bilinear")
+            logits = nn.functional.interpolate(
+                logits, size=masks.shape[-2:], mode="bilinear"
+            )
             loss = loss_fn(logits, masks.long())
             optimizer.zero_grad()
             loss.backward()
@@ -98,9 +112,13 @@ def train_seg(backbone, device, epochs=5):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, choices=["cls", "seg", "det"], required=True)
+    parser.add_argument(
+        "--task", type=str, choices=["cls", "seg", "det"], required=True
+    )
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--force", action="store_true", help="retrain even if checkpoint exists")
+    parser.add_argument(
+        "--force", action="store_true", help="retrain even if checkpoint exists"
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

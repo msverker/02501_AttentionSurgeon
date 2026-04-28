@@ -46,7 +46,7 @@ class PruningEvaluator:
                 mask[layer, head] = 0
                 acc = self.evaluate(mask)
                 flops_ratio = (144 - (step + 1)) / 144
-                reward = acc * flops_ratio
+                reward = acc / flops_ratio
                 run_results.append([acc, flops_ratio, reward])
             all_results.append(run_results)
 
@@ -56,25 +56,18 @@ class PruningEvaluator:
         return means, stds
     
     @staticmethod
-    def random_strategy(mask, census, max_per_layer=6):
-        # 1. Pull the tiny 12x12 mask to the CPU once to prevent sync bottlenecks
-        mask_cpu = mask.cpu()
-        valid_mask = mask_cpu.clone()
-        
-        # 2. Vectorize the loop: Count pruned heads per layer all at once
-        pruned_counts = (mask_cpu == 0).sum(dim=1)
-        
-        # 3. Mask out any layers that hit the maximum limit
-        valid_mask[pruned_counts >= max_per_layer] = 0
-        
-        # 4. Find valid coordinates and pick one randomly
+    def random_strategy(mask, census, max_per_layer=12):
+        valid_mask = mask.clone()
+        for l in range(12):
+            if (mask[l] == 0).sum() >= max_per_layer:
+                valid_mask[l] = 0
         unpruned = torch.where(valid_mask == 1)
         idx = torch.randint(len(unpruned[0]), (1,)).item()
         
         return unpruned[0][idx].item(), unpruned[1][idx].item()
     
     @staticmethod
-    def importance_strategy(mask, census, max_per_layer=6):
+    def importance_strategy(mask, census, max_per_layer=12):
         scores = census["importance"].clone()
         scores[mask == 0] = float("inf")
         for layer in range(12):
@@ -84,7 +77,7 @@ class PruningEvaluator:
         return idx // 12, idx % 12
 
     @staticmethod
-    def magnitude_strategy(mask, census, max_per_layer=6):
+    def magnitude_strategy(mask, census, max_per_layer=12):
         scores = census["activation_mag"].clone()
         scores[mask == 0] = float("inf")
         for layer in range(12):
@@ -92,6 +85,22 @@ class PruningEvaluator:
                 scores[layer] = float("inf")
         idx = scores.argmin()
         return idx // 12, idx % 12
+    
+    @staticmethod
+    def uniform_strategy(mask, census):
+        # prune from the layer with the most remaining heads
+        # within that layer, pick the least important head
+        heads_per_layer = mask.sum(dim=1)  # (12,)
+        
+        # pick layer with most remaining heads (break ties by lowest index)
+        layer = heads_per_layer.argmax().item()
+        
+        # within that layer, pick lowest importance
+        scores = census["importance"][layer].clone()
+        scores[mask[layer] == 0] = float("inf")
+        head = scores.argmin().item()
+        
+        return layer, head
 
 
     def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
