@@ -53,6 +53,12 @@ imp_means, imp_stds = evaluator.run_pruning_strategy(
 )
 print("Done.")
 
+print("Running uniform strategy...")
+uni_means, uni_stds = evaluator.run_pruning_strategy(
+    PruningEvaluator.uniform_strategy, census, n_steps=72, n_runs=1
+)
+print("Done.")
+
 # save
 np.savez(
     "results/baseline_pruning_cls_results.npz",
@@ -63,5 +69,7 @@ np.savez(
     magnitude_stds=mag_stds.numpy(),
     importance_means=imp_means.numpy(),
     importance_stds=imp_stds.numpy(),
+    uniform_means=uni_means.numpy(),
+    uniform_stds=uni_stds.numpy(),
 )
 print("Saved baseline_pruning_cls_results.npz")

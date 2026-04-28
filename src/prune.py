@@ -84,6 +84,22 @@ class PruningEvaluator:
                 scores[layer] = float("inf")
         idx = scores.argmin()
         return idx // 12, idx % 12
+    
+    @staticmethod
+    def uniform_strategy(mask, census):
+        # prune from the layer with the most remaining heads
+        # within that layer, pick the least important head
+        heads_per_layer = mask.sum(dim=1)  # (12,)
+        
+        # pick layer with most remaining heads (break ties by lowest index)
+        layer = heads_per_layer.argmax().item()
+        
+        # within that layer, pick lowest importance
+        scores = census["importance"][layer].clone()
+        scores[mask[layer] == 0] = float("inf")
+        head = scores.argmin().item()
+        
+        return layer, head
 
     @staticmethod
     def _apply_pruning_hooks(backbone, mask):
