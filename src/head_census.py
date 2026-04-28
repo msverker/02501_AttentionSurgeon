@@ -57,6 +57,22 @@ class AttentionCensus:
 
         return torch.stack(accum_distance, dim=0)  # (num_layers, num_heads)
 
+    def compute_cls_entropy(self, attentions):
+        # CLS token as query (row 0), attending to all patch tokens
+        # Low entropy = focused CLS attention = CLS-aggregator head
+        accum = []
+        for attn in attentions:
+            cls_attn = attn[
+                :, :, 0, 1:
+            ]  # (B, num_heads, 256) — CLS attending to patches
+            cls_attn = cls_attn / cls_attn.sum(dim=-1, keepdim=True)  # renormalize
+            entropy = -torch.sum(
+                cls_attn * torch.log(cls_attn + 1e-8), dim=-1
+            )  # (B, num_heads)
+            entropy = entropy.mean(dim=0)  # (num_heads,)
+            accum.append(entropy)
+        return torch.stack(accum, dim=0)  # (num_layers, num_heads)
+
     @torch.no_grad()
     def run(self, dataloader, num_batches=50):
         self.backbone.eval()
@@ -68,6 +84,7 @@ class AttentionCensus:
         entropy_accum = torch.zeros(self.num_layers, self.num_heads)
         distance_accum = torch.zeros(self.num_layers, self.num_heads)
         magnitude_accum = torch.zeros(self.num_layers, self.num_heads)
+        cls_entropy_accum = torch.zeros(self.num_layers, self.num_heads)
 
         def make_hook(layer_idx):
             def hook(module, input, output):
@@ -97,15 +114,12 @@ class AttentionCensus:
             outputs = self.backbone(imgs, output_attentions=True)
             attentions = outputs["attentions"]  # tuple of 12 x (B, 12, 197, 197)
 
-            print(
-                type(attentions), len(attentions) if attentions is not None else "None"
-            )
-
             for layer_idx in range(self.num_layers):
                 magnitude_accum[layer_idx] += buffer[layer_idx].cpu()
 
             entropy_accum += self.compute_entropy(attentions).cpu()
             distance_accum += self.compute_distance(attentions).cpu()
+            cls_entropy_accum += self.compute_cls_entropy(attentions).cpu()
 
         for h in hooks:
             h.remove()
@@ -114,9 +128,12 @@ class AttentionCensus:
             "entropy": entropy_accum / num_batches,
             "distance": distance_accum / num_batches,
             "magnitude": magnitude_accum / num_batches,
+            "cls_entropy": cls_entropy_accum / num_batches,
         }
 
-    def compute_importance(self, dataloader, probe, loss_fn, task="cls", num_batches=50):
+    def compute_importance(
+        self, dataloader, probe, loss_fn, task="cls", num_batches=50
+    ):
         importance_accum = torch.zeros(self.num_layers, self.num_heads)
         attn_buffer = {}
         grad_buffer = {}
@@ -130,7 +147,10 @@ class AttentionCensus:
             def hook(module, input, output):
                 attn = output[1]
                 attn_buffer[layer_idx] = attn
-                attn.register_hook(lambda grad: grad_buffer.__setitem__(layer_idx, grad))
+                attn.register_hook(
+                    lambda grad: grad_buffer.__setitem__(layer_idx, grad)
+                )
+
             return hook
 
         for i, layer in enumerate(self.backbone.model.encoder.layer):
@@ -169,16 +189,17 @@ class AttentionCensus:
 
 
 if __name__ == "__main__":
-    from backbone import (
-        DinoV2Backbone,
-        get_cifar100_loaders,
-        ClassificationHead,
-        cache_features,
-    )
     import torch.nn as nn
-    from torch.utils.data import TensorDataset, DataLoader, Subset
+    from torch.utils.data import DataLoader, Subset, TensorDataset
     from torchvision import datasets, transforms
     from transformers import AutoImageProcessor
+
+    from baseline.backbone import (
+        ClassificationHead,
+        DinoV2Backbone,
+        cache_features,
+        get_cifar100_loaders,
+    )
 
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     backbone = DinoV2Backbone(device=device)

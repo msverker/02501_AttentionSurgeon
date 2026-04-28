@@ -35,6 +35,7 @@ np.savez(
     entropy=results["entropy"].numpy(),
     distance=results["distance"].numpy(),
     activation_mag=results["magnitude"].numpy(),
+    cls_query_entropy=results["cls_entropy"].numpy(),
     importance=results["importance_cls"].detach().numpy(),
 )
 print("Saved head_profiles.npz")

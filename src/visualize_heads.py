@@ -353,7 +353,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", type=str, default="head_profiles.npz")
     ap.add_argument("--output_dir", type=str, default="figures")
-    ap.add_argument("--n_clusters", type=int, default=4)
+    ap.add_argument("--n_clusters", type=int, default=5)
     args = ap.parse_args()
 
     out = Path(args.output_dir)
