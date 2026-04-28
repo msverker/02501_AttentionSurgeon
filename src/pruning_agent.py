@@ -7,17 +7,6 @@ from baseline.backbone import DinoV2Backbone  # Replace with your actual DINOv2 
 import numpy as np
 
 # ==========================================
-# 1. MOCK COMPONENTS (Replace with yours)
-# ==========================================
-class ClassificationHead(nn.Module):
-    def __init__(self, in_dim=768, num_classes=10):
-        super().__init__()
-        self.fc = nn.Linear(in_dim, num_classes)
-        
-    def forward(self, x):
-        return self.fc(x)
-
-# ==========================================
 # 2. RL ENVIRONMENT (Unchanged)
 # ==========================================
 class TransformerPruningEnv:
@@ -29,13 +18,20 @@ class TransformerPruningEnv:
         self.num_layers = 12
         self.num_heads = 12
         self.total_heads = self.num_layers * self.num_heads
-        
+        self.step_count = 0
         self.reset()
+        self.baseline_acc = self._get_current_accuracy(num_batches=100)  # Get baseline accuracy at initialization
+        self.alpha = 2.0
+        self.beta = 1.0
+        self.gamma = 1
+        self.epsilon = 0.01
+        
 
     def reset(self):
         self.mask = torch.ones(self.num_layers, self.num_heads).to(self.device)
         self.current_acc = self._get_current_accuracy()
         self.current_flops = 1.0
+        self.step_count = 0
         return self._get_state()
 
     def _get_state(self):
@@ -90,11 +86,17 @@ class TransformerPruningEnv:
             return self._get_state(), -1.0, False
         
         self.mask[layer, head] = 0.0
-        self.current_flops -= (1.0 / self.total_heads)
-        self.current_acc = self._get_current_accuracy()
+
+        self.step_count += 1
+        sparsity = (self.step_count) / self.total_heads
         
-        reward = self.current_acc * (1.0 - self.current_flops)
-        done = self.current_flops <= 0.1 or self.current_acc < 0.5
+        
+        self.current_acc = self._get_current_accuracy()
+    
+        retention_acc = (self.current_acc - self.baseline_acc)/ self.baseline_acc
+        penalty = max(0.0, (self.baseline_acc - self.current_acc) - self.epsilon)  
+        reward = (self.alpha*retention_acc) + (self.beta * sparsity) - (self.gamma * penalty**2)
+        done = sparsity >= 0.5
         
         return self._get_state(), reward, done
 
@@ -140,7 +142,7 @@ class PPOActorCritic(nn.Module):
         action_logprob = dist.log_prob(action)
         state_val = self.critic(state)
         
-        return action.item(), action_logprob, state_val.squeeze()
+        return action.item(), action_logprob, state_val.squeeze(-1)
         
     def evaluate(self, states, actions, valid_masks):
         """Used during the PPO update step to re-evaluate collected trajectories"""
@@ -152,7 +154,7 @@ class PPOActorCritic(nn.Module):
         dist_entropy = dist.entropy()
         state_values = self.critic(states)
         
-        return action_logprobs, state_values.squeeze(), dist_entropy
+        return action_logprobs, state_values.squeeze(-1), dist_entropy
 
 
 def train_ppo_agent(env, episodes=50):
@@ -191,7 +193,7 @@ def train_ppo_agent(env, episodes=50):
             layer = action // env.num_heads
             head = action % env.num_heads
             print(f"  -> Step {steps + 1:03d} | Pruned L{layer:02d} H{head:02d} | "
-                  f"Acc: {env.current_acc:.4f} | FLOPs: {env.current_flops*100:.1f}% | "
+                  f"Acc: {env.current_acc:.4f} | Pruned Heads: {env.step_count:.1f}% | "
                   f"Reward: {reward:.4f}")
             # ---------------------------------
             
@@ -218,7 +220,8 @@ def train_ppo_agent(env, episodes=50):
             returns.insert(0, discounted_reward)
             
         returns = torch.tensor(returns, dtype=torch.float32).to(device)
-        returns = (returns - returns.mean()) / (returns.std() + 1e-7) # Normalize
+        if len(returns) > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-7) # Normalize
         
         # 2. Convert lists to tensors for batch updating
         old_states = torch.stack(buffer_states).detach()
@@ -252,7 +255,7 @@ def train_ppo_agent(env, episodes=50):
             optimizer.step()
             
         print(f"Episode {ep + 1}/{episodes} | Steps: {steps} | "
-              f"Final FLOPs: {env.current_flops*100:.1f}% | "
+              f"Pruned Heads: {env.step_count:.1f}% | "
               f"Final Acc: {env.current_acc:.2f} | "
               f"Total Reward: {total_reward:.2f}")
               
@@ -263,6 +266,7 @@ def train_ppo_agent(env, episodes=50):
 # 4. MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
+    from baseline.backbone import ClassificationHead
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -283,7 +287,7 @@ if __name__ == "__main__":
         device=device
     )
 
-    trained_policy = train_ppo_agent(env, episodes=500)
+    trained_policy = train_ppo_agent(env, episodes=20)
     print("Training complete.")
     
     import os
