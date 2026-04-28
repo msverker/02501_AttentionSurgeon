@@ -63,6 +63,7 @@ class PruningEvaluator:
                 valid_mask[l] = 0
         unpruned = torch.where(valid_mask == 1)
         idx = torch.randint(len(unpruned[0]), (1,)).item()
+        
         return unpruned[0][idx].item(), unpruned[1][idx].item()
     
     @staticmethod
@@ -101,6 +102,36 @@ class PruningEvaluator:
         
         return layer, head
 
+
+    def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
+        all_results = []
+
+        for run in range(n_runs):  
+            mask = torch.ones(12, 12)
+            run_results = []
+            
+            for step in range(n_steps):
+                layer, head = strategy(mask, census)
+                mask[layer, head] = 0
+                acc = self.evaluate(mask)
+                
+                # --- ADD THIS LINE ---
+                # Feed the new accuracy back to the RL agent for its next state
+                if hasattr(strategy, 'update_acc'):
+                    strategy.update_acc(acc)
+                # ---------------------
+                
+                flops_ratio = (144 - (step + 1)) / 144
+                reward = acc * flops_ratio
+                run_results.append([acc, flops_ratio, reward])
+                
+            all_results.append(run_results)
+
+        all_results = torch.tensor(all_results)  
+        means = all_results.mean(dim=0)  
+        stds = all_results.std(dim=0, correction=0)  
+        return means, stds
+
     @staticmethod
     def _apply_pruning_hooks(backbone, mask):
         """
@@ -124,12 +155,52 @@ class PruningEvaluator:
             hooks.append(h)
 
         return hooks
+    
+class PPOAgentStrategy:
+    def __init__(self, policy_network, device="cuda"):
+        self.policy_network = policy_network
+        self.policy_network.eval()
+        self.device = device
+        # Track accuracy for the state vector
+        self.current_acc = 1.0 
+
+    def __call__(self, mask, census):
+        """Matches the signature: strategy(mask, census) -> (layer, head)"""
+        # 1. Calculate current FLOPs
+        current_flops = mask.sum().item() / 144.0
+        
+        # 2. Build the state vector [Mask (144) | Acc (1) | FLOPs (1)]
+        state = torch.cat([
+            mask.flatten().to(self.device), 
+            torch.tensor([self.current_acc, current_flops]).to(self.device)
+        ])
+        
+        valid_mask = (mask.flatten() == 1.0).to(self.device)
+        
+        # 3. Get action probabilities from the Actor network
+        with torch.no_grad():
+            action_logits = self.policy_network.actor(state)
+            
+            # Mask out already-pruned heads
+            action_logits[~valid_mask] = -1e8
+            
+            # For EVALUATION, we don't sample randomly. We pick the absolute best action.
+            action_idx = torch.argmax(action_logits).item()
+            
+        layer = action_idx // 12
+        head = action_idx % 12
+        
+        return layer, head
+        
+    def update_acc(self, new_acc):
+        self.current_acc = new_acc
 
 
 if __name__ == "__main__":
     # quick test to verify pruning hooks work as intended
     import torch
     import numpy as np
+    from pruning_agent import PPOActorCritic
     from baseline.backbone import (
         DinoV2Backbone,
         get_imagenet_loaders,
@@ -153,6 +224,29 @@ if __name__ == "__main__":
     census["importance"] = census.pop("importance")
 
     evaluator = PruningEvaluator(backbone, probe, val_loader, task="cls")
+
+
+    print("Loading trained RL Agent...")
+    # 2. Initialize the empty brain
+    agent_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
+    # 3. Load the trained weights
+    agent_net.load_state_dict(torch.load("checkpoints/rl_agent_ppo.pt", map_location=device))
+    
+    # 4. Wrap it in your strategy class
+    rl_strategy = PPOAgentStrategy(agent_net, device=device)
+
+    # 5. Run the evaluation
+    print("Testing RL Agent strategy for 2 steps...")
+    rl_means, _ = evaluator.run_pruning_strategy(
+        rl_strategy, census, n_steps=2, n_runs=1
+    )
+    print("Done.")
+
+    # 6. Print the results
+    print("RL Agent strategy results:")
+    for step in range(len(rl_means)):
+        acc, flops, reward = rl_means[step]
+        print(f"Step {step + 1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
 
     # test baseline accuracy (no pruning)
     baseline_acc = evaluator.evaluate(torch.ones(12, 12))
