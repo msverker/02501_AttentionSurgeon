@@ -56,7 +56,7 @@ class PruningEvaluator:
         return means, stds
     
     @staticmethod
-    def random_strategy(mask, census, max_per_layer=6):
+    def random_strategy(mask, census, max_per_layer=12):
         valid_mask = mask.clone()
         for l in range(12):
             if (mask[l] == 0).sum() >= max_per_layer:
@@ -66,7 +66,7 @@ class PruningEvaluator:
         return unpruned[0][idx].item(), unpruned[1][idx].item()
     
     @staticmethod
-    def importance_strategy(mask, census, max_per_layer=6):
+    def importance_strategy(mask, census, max_per_layer=12):
         scores = census["importance"].clone()
         scores[mask == 0] = float("inf")
         for layer in range(12):
@@ -76,7 +76,7 @@ class PruningEvaluator:
         return idx // 12, idx % 12
 
     @staticmethod
-    def magnitude_strategy(mask, census, max_per_layer=6):
+    def magnitude_strategy(mask, census, max_per_layer=12):
         scores = census["activation_mag"].clone()
         scores[mask == 0] = float("inf")
         for layer in range(12):
