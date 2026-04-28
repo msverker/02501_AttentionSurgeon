@@ -96,8 +96,8 @@ class TransformerPruningEnv:
         retention_acc = (self.current_acc - self.baseline_acc)/ self.baseline_acc
         penalty = max(0.0, (self.baseline_acc - self.current_acc) - self.epsilon)  
         reward = (self.alpha*retention_acc) + (self.beta * sparsity) - (self.gamma * penalty**2)
-        done = sparsity >= 0.5
-        
+        done = sparsity >= 0.5 # Stop after pruning 50% of heads
+         
         return self._get_state(), reward, done
 
 
@@ -266,7 +266,11 @@ def train_ppo_agent(env, episodes=50):
 # 4. MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
-    from baseline.backbone import ClassificationHead
+
+    import argparse
+    from baseline.backbone import ClassificationHead, ADE20KHead, CocoHead
+    from baseline.loaders import get_ade20k_dataloaders, get_coco_dataloaders
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -275,10 +279,31 @@ if __name__ == "__main__":
         device = torch.device("cpu")
     print(f"Using device: {device}")
 
-    backbone = DinoV2Backbone().to(device)
-    probe = ClassificationHead(in_dim=768, num_classes=1000).to(device)
-    probe.load_state_dict(torch.load("checkpoints/probe_imagenet.pt", map_location=device))
-    _, dataloader = get_imagenet_loaders()
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--dataset", type=str, default="imagenet", choices=["imagenet", "ade20k", "coco"], help="Dataset to use for training the RL agent")
+    parser.add_argument("--episodes", type=int, default=20, help="Number of training episodes for the RL agent")    
+    
+    args = parser.parse_args()
+
+
+    if args.dataset == "imagenet":
+        backbone = DinoV2Backbone().to(device)
+        probe = ClassificationHead(in_dim=768, num_classes=1000).to(device)
+        probe.load_state_dict(torch.load("checkpoints/probe_imagenet.pt", map_location=device))
+        _, dataloader = get_imagenet_loaders()
+
+    elif args.dataset == "ade20k":
+        backbone = DinoV2Backbone().to(device)
+        probe = ADE20KHead(in_dim=768, num_classes=150).to(device)
+        probe.load_state_dict(torch.load("checkpoints/ade20k_head.pth", map_location=device))
+        _, dataloader = get_ade20k_dataloaders(root="/path/to/ade20k")
+    
+    elif args.dataset == "coco":
+        backbone = DinoV2Backbone().to(device)
+        probe = CocoHead(in_dim=768, num_classes=80).to(device)
+        probe.load_state_dict(torch.load("checkpoints/coco_head.pth", map_location=device))
+        _, dataloader = get_coco_dataloaders(batch_size=8)
 
     env = TransformerPruningEnv(
         backbone=backbone, 
@@ -287,10 +312,10 @@ if __name__ == "__main__":
         device=device
     )
 
-    trained_policy = train_ppo_agent(env, episodes=20)
+    trained_policy = train_ppo_agent(env, episodes=args.episodes)
     print("Training complete.")
     
     import os
     os.makedirs("checkpoints", exist_ok=True)
-    torch.save(trained_policy.state_dict(), "checkpoints/rl_agent_ppo.pt")
-    print("Agent saved to checkpoints/rl_agent_ppo.pt")
+    torch.save(trained_policy.state_dict(), f"checkpoints/rl_agent_ppo_{args.dataset}.pt")
+    print(f"Agent saved to checkpoints/rl_agent_ppo_{args.dataset}.pt")
