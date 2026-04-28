@@ -46,7 +46,7 @@ class PruningEvaluator:
                 mask[layer, head] = 0
                 acc = self.evaluate(mask)
                 flops_ratio = (144 - (step + 1)) / 144
-                reward = acc * flops_ratio
+                reward = acc / flops_ratio
                 run_results.append([acc, flops_ratio, reward])
             all_results.append(run_results)
 
@@ -96,16 +96,15 @@ class PruningEvaluator:
 
         def make_hook(layer_idx, mask_row):
             def hook(module, input, output):
-                # output is (B, seq_len, 768)
-                B, S, _ = output.shape
-                ctx = output.view(B, S, 12, head_dim)
+                ctx = output[0]  # (B, S, 768)
+                B, S, _ = ctx.shape
+                ctx = ctx.view(B, S, 12, head_dim)
                 ctx = ctx * mask_row.to(ctx.device).view(1, 1, 12, 1)
-                return ctx.view(B, S, 768)
-
+                return (ctx.view(B, S, 768),) + output[1:]
             return hook
 
         for i, layer in enumerate(backbone.model.encoder.layer):
-            h = layer.attention.output.register_forward_hook(make_hook(i, mask[i]))
+            h = layer.attention.attention.register_forward_hook(make_hook(i, mask[i]))
             hooks.append(h)
 
         return hooks
