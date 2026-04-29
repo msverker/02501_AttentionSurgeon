@@ -6,42 +6,52 @@ from baseline.loaders import get_imagenet_loaders  # Replace with your actual da
 from baseline.backbone import DinoV2Backbone  # Replace with your actual DINOv2 backbone import
 import numpy as np
 
+
 # ==========================================
 # 2. RL ENVIRONMENT (Unchanged)
 # ==========================================
 class TransformerPruningEnv:
-    def __init__(self, backbone, probe, dataloader, device):
+    def __init__(self, backbone, probe, dataloader, device, config, dataset_name="imagenet"):
         self.backbone = backbone
         self.probe = probe
         self.dataloader = dataloader
         self.device = device
+        self.dataset_name = dataset_name
         self.num_layers = 12
         self.num_heads = 12
         self.total_heads = self.num_layers * self.num_heads
         self.step_count = 0
+        self.config = config[dataset_name] #load dataset-specific config
+        self.alpha = self.config["alpha"]
+        self.beta = self.config["beta"]
+        self.gamma = self.config["gamma"]
+        self.epsilon = self.config["epsilon"]
+        self.sparsity = 0.0
+        self.total_reward = 0.0
         self.reset()
-        self.baseline_acc = self._get_current_accuracy(num_batches=100)  # Get baseline accuracy at initialization
-        self.alpha = 2.0
-        self.beta = 1.0
-        self.gamma = 1
-        self.epsilon = 0.01
+        self.baseline_loss = self._get_current_loss(num_batches=4)  # Get baseline loss at initialization
+        
+        print(f"Baseline Loss: {self.baseline_loss:.4f}")
+        
+        
         
 
     def reset(self):
         self.mask = torch.ones(self.num_layers, self.num_heads).to(self.device)
-        self.current_acc = self._get_current_accuracy()
         self.current_flops = 1.0
         self.step_count = 0
+        self.current_loss = self._get_current_loss(num_batches=4)  # Get baseline loss at reset
         return self._get_state()
 
     def _get_state(self):
         return torch.cat([self.mask.flatten(), 
-                          torch.tensor([self.current_acc, self.current_flops]).to(self.device)])
+                          torch.tensor([self.current_loss, self.sparsity, self.total_reward]).to(self.device)])
 
-    def _get_current_accuracy(self, num_batches=2):
+    def _get_current_loss(self, num_batches=2):
         self.backbone.eval()
         self.probe.eval()
-        correct, total = 0, 0
+        total_loss = 0.0
+        total = 0
         device = next(self.probe.parameters()).device
         
         hooks = []
@@ -64,23 +74,75 @@ class TransformerPruningEnv:
             hooks.append(h)
 
         with torch.no_grad():
-            for i, (imgs, labels) in enumerate(self.dataloader):
+            for i, batch in enumerate(self.dataloader):
                 if i >= num_batches: 
                     break
-                imgs, labels = imgs.to(device), labels.to(device)
-                feats = self.backbone(imgs)["cls_token"] 
-                logits = self.probe(feats)
-                correct += (logits.argmax(1) == labels).sum().item()
-                total += labels.size(0)
+                
+                if self.dataset_name == "ade20k":
+                    import torch.nn.functional as F
+                    imgs, labels = batch["image"].to(device), batch["mask"].to(device)
+                    feats = self.backbone(imgs)
+                    logits = self.probe(feats)
+                    logits = F.interpolate(logits, size=labels.shape[-2:], mode="bilinear", align_corners=False)
+                    loss = F.cross_entropy(logits, labels.long(), ignore_index=-1)
+                    total_loss += loss.item()
+                    total += 1
+                    
+                elif self.dataset_name == "coco":
+                    from baseline.backbone import build_targets
+                    import torch.nn.functional as F
+                    
+                    images = batch[0].to(device)
+                    if isinstance(batch[1], dict):
+                        targets = [batch[1]]  # Not exact COCO format typically, adjusting to be safe
+                    else:
+                        targets = batch[1]
+
+                    feats = self.backbone(images)
+                    cls_logits, box_preds, obj_logits = self.probe(feats)
+                
+                    grid_size = cls_logits.shape[-1]
+                    
+                    obj_t, cls_t, box_t = build_targets(targets, grid_size=grid_size, device=device)
+                    
+                    obj_loss = F.binary_cross_entropy_with_logits(obj_logits, obj_t)
+                    cls_loss = F.cross_entropy(
+                        cls_logits.permute(0, 2, 3, 1).reshape(-1, 80),
+                        cls_t.view(-1),
+                        reduction="mean",
+                    )
+                    box_loss = F.l1_loss(box_preds, box_t)
+                    
+                    batch_loss = obj_loss + cls_loss + box_loss
+                    total_loss += batch_loss.item() 
+                    total += 1
+                                        
+                else:
+                    import torch.nn.functional as F
+                    imgs, labels = batch
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    feats = self.backbone(imgs)
+                    logits = self.probe(feats)
+                    loss = F.cross_entropy(logits, labels)
+                    total_loss += loss.item()
+                    total += 1
 
         for h in hooks:
             h.remove()
-            
-        return correct / total if total > 0 else 0.0
+       
+        return total_loss / total if total > 0 else 0.0
 
     def step(self, action_idx):
+        if action_idx == self.total_heads:  # Stop action
+            retention_loss = (self.baseline_loss - self.current_loss) / self.baseline_loss
+            reward = (self.alpha * retention_loss) + (self.beta * self.sparsity)
+            self.total_reward += reward
+            return self._get_state(), reward, True
+        
+        
         layer = action_idx // self.num_heads
         head = action_idx % self.num_heads
+
         
         if self.mask[layer, head] == 0.0:
             return self._get_state(), -1.0, False
@@ -88,16 +150,20 @@ class TransformerPruningEnv:
         self.mask[layer, head] = 0.0
 
         self.step_count += 1
-        sparsity = (self.step_count) / self.total_heads
+        self.sparsity = (self.step_count) / self.total_heads
         
-        
-        self.current_acc = self._get_current_accuracy()
+
+        self.current_loss = self._get_current_loss(num_batches=4)
     
-        retention_acc = (self.current_acc - self.baseline_acc)/ self.baseline_acc
-        penalty = max(0.0, (self.baseline_acc - self.current_acc) - self.epsilon)  
-        reward = (self.alpha*retention_acc) + (self.beta * sparsity) - (self.gamma * penalty**2)
-        done = sparsity >= 0.5 # Stop after pruning 50% of heads
-         
+        retention_loss = (self.baseline_loss - self.current_loss) / self.baseline_loss # Positive is better (loss decreased)
+        penalty = max(0.0, (self.current_loss - self.baseline_loss) - self.epsilon)  
+        reward = (self.alpha*retention_loss) + (self.beta * self.sparsity) - (self.gamma * penalty**2)
+        reward += 0.1
+        done = False
+        
+        reward = max(self.config['reward_floor'], reward) # Ensure reward is not too negative to destabilize training
+        
+        self.total_reward += reward
         return self._get_state(), reward, done
 
 
@@ -159,13 +225,13 @@ class PPOActorCritic(nn.Module):
 
 def train_ppo_agent(env, episodes=50):
     device = env.device
-    policy = PPOActorCritic(input_dim=env.total_heads + 2, action_dim=env.total_heads).to(device)
+    policy = PPOActorCritic(input_dim=env.total_heads + 3, action_dim=env.total_heads + 1).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=3e-4)
     
     # PPO Hyperparameters
     gamma = 0.99            # Discount factor
     eps_clip = 0.2          # PPO clip parameter
-    K_epochs = 4            # Number of times to update the network per episode
+    K_epochs = 10           # Number of times to update the network per episode
     
     print(f"Starting PPO Training for {episodes} episodes...")
     
@@ -182,8 +248,11 @@ def train_ppo_agent(env, episodes=50):
         # --- PHASE 1: DATA COLLECTION (ROLLOUT) ---
         while not done:
             # Get valid actions mask
-            valid_mask = (env.mask.flatten() == 1.0)
+            head_mask = (env.mask.flatten() == 1.0)
             
+            stop_action_valid = torch.tensor([True], device=device)
+            valid_mask = torch.cat([head_mask, stop_action_valid])
+
             with torch.no_grad():
                 action, logprob, state_val = policy.act(state, valid_mask)
             
@@ -193,7 +262,7 @@ def train_ppo_agent(env, episodes=50):
             layer = action // env.num_heads
             head = action % env.num_heads
             print(f"  -> Step {steps + 1:03d} | Pruned L{layer:02d} H{head:02d} | "
-                  f"Acc: {env.current_acc:.4f} | Pruned Heads: {env.step_count:.1f}% | "
+                  f"Loss: {env.current_loss:.4f} | Heads: {(1-env.sparsity)*100:.1f}% | "
                   f"Reward: {reward:.4f}")
             # ---------------------------------
             
@@ -248,15 +317,18 @@ def train_ppo_agent(env, episodes=50):
             # Actor Loss (Maximize surrogate) + Critic Loss (MSE) + Entropy Bonus (Exploration)
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = nn.MSELoss()(state_values, returns)
-            loss = actor_loss + 0.5 * critic_loss - 0.01 * dist_entropy.mean()
+
+            progress = ep / episodes
+            current_entropy_coef = 0.01 * (1.0 - progress) + 0.001 * progress
+            loss = actor_loss + 0.5 * critic_loss - current_entropy_coef * dist_entropy.mean()
             
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
         print(f"Episode {ep + 1}/{episodes} | Steps: {steps} | "
-              f"Pruned Heads: {env.step_count:.1f}% | "
-              f"Final Acc: {env.current_acc:.2f} | "
+              f"Heads: {(1-env.sparsity)*100:.1f}% | "
+              f"Final Loss: {env.current_loss:.2f} | "
               f"Total Reward: {total_reward:.2f}")
               
     return policy
@@ -270,6 +342,7 @@ if __name__ == "__main__":
     import argparse
     from baseline.backbone import ClassificationHead, ADE20KHead, CocoHead
     from baseline.loaders import get_ade20k_dataloaders, get_coco_dataloaders
+    from config.agents_config import DATASET_CONFIGS
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -297,19 +370,21 @@ if __name__ == "__main__":
         backbone = DinoV2Backbone().to(device)
         probe = ADE20KHead(in_dim=768, num_classes=150).to(device)
         probe.load_state_dict(torch.load("checkpoints/ade20k_head.pth", map_location=device))
-        _, dataloader = get_ade20k_dataloaders(root="/path/to/ade20k")
+        _, dataloader = get_ade20k_dataloaders(root="data/archive")
     
     elif args.dataset == "coco":
         backbone = DinoV2Backbone().to(device)
         probe = CocoHead(in_dim=768, num_classes=80).to(device)
         probe.load_state_dict(torch.load("checkpoints/coco_head.pth", map_location=device))
         _, dataloader = get_coco_dataloaders(batch_size=8)
-
+    
     env = TransformerPruningEnv(
         backbone=backbone, 
         probe=probe, 
         dataloader=dataloader, 
-        device=device
+        device=device,
+        config=DATASET_CONFIGS,
+        dataset_name=args.dataset
     )
 
     trained_policy = train_ppo_agent(env, episodes=args.episodes)

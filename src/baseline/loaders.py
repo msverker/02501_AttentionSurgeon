@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import torch
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
@@ -113,11 +115,12 @@ def collate_fn(batch):
     return images, targets
 
 
-def get_coco_dataloaders(batch_size=8):
-    root = "/work3/s216143/02501_AttentionSurgeon/data/coco/val2017"
-    ann = "/work3/s216143/02501_AttentionSurgeon/data/coco/annotations/instances_val2017.json"
+def get_coco_dataloaders(root='data/coco',batch_size=8):
+    root_path = Path(root)
+    ann = root_path / 'annotations' / 'instances_val2017.json'
+    img_dir = root_path / 'val2017'
 
-    dataset = CocoDataset(root, ann)
+    dataset = CocoDataset(str(img_dir), str(ann))
 
     train_loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
