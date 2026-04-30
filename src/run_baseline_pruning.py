@@ -1,90 +1,122 @@
+import argparse
 import torch
 import numpy as np
-from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
+from pathlib import Path
+from baseline.backbone import DinoV2Backbone, ClassificationHead, ADE20KHead, CocoHead
+from baseline.loaders import get_imagenet_loaders, get_cifar100_loaders, get_ade20k_dataloaders, get_coco_dataloaders
 from pruning_agent import PPOActorCritic
 from prune import PruningEvaluator, PPOAgentStrategy
 
-device = "cuda" if torch.cuda.is_available() else "mps"
+def main():
+    parser = argparse.ArgumentParser(description="Run baseline pruning strategies")
+    parser.add_argument("--dataset", type=str, default="imagenet", choices=["imagenet", "cifar100", "ade20k", "coco"], help="Dataset to evaluate on")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for validation loader")
+    parser.add_argument("--probe-ckpt", type=str, default=None, help="Path to head checkpoint")
+    parser.add_argument("--census", type=str, default="results/head_profiles_cls.npz", help="Path to head profiles numpy file")
+    parser.add_argument("--output", type=str, default=None, help="Output file for results")
+    parser.add_argument("--rl-agent-ckpt", type=str, default="checkpoints/rl_agent_ppo.pt", help="Path to RL agent checkpoint")
+    parser.add_argument("--run-agent", action="store_true", help="Whether to also run the RL pruning agent")
+    args = parser.parse_args()
 
-# load backbone
-print("Loading backbone...")
-backbone = DinoV2Backbone(device=device)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# load probe
-print("Loading probe...")
-probe = ClassificationHead(in_dim=768, num_classes=1000).to(device)
-probe.load_state_dict(torch.load("checkpoints/probe_imagenet.pt", map_location=device))
-probe.eval()
+    # Set up dataset specific parameters
+    if args.dataset == "imagenet":
+        num_classes = 1000
+        get_loaders_fn = get_imagenet_loaders
+        probe_ckpt = args.probe_ckpt or "checkpoints/probe_imagenet.pt"
+        output_file = args.output or "results/baseline_pruning_imagenet_results.npz"
+        head_cls = ClassificationHead
+        task = "cls"
+    elif args.dataset == "cifar100":
+        num_classes = 100
+        get_loaders_fn = get_cifar100_loaders
+        probe_ckpt = args.probe_ckpt or "checkpoints/probe_cifar100.pt"
+        output_file = args.output or "results/baseline_pruning_cifar100_results.npz"
+        head_cls = ClassificationHead
+        task = "cls"
+    elif args.dataset == "ade20k":
+        num_classes = 150
+        get_loaders_fn = lambda batch_size: get_ade20k_dataloaders(root="./data/archive", batch_size=batch_size)
+        probe_ckpt = args.probe_ckpt or "checkpoints/ade20k_head.pth"
+        output_file = args.output or "results/baseline_pruning_ade20k_results.npz"
+        head_cls = ADE20KHead
+        task = "seg"
+    elif args.dataset == "coco":
+        num_classes = 80
+        get_loaders_fn = get_coco_dataloaders
+        probe_ckpt = args.probe_ckpt or "checkpoints/coco_head.pth"
+        output_file = args.output or "results/baseline_pruning_coco_results.npz"
+        head_cls = CocoHead
+        task = "det"
+    
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
 
-# load val loader
-print("Loading ImageNet val...")
-_, val_loader = get_imagenet_loaders(batch_size=32)
+    # backbone and probe
+    backbone = DinoV2Backbone(device=device)
+    probe = head_cls(in_dim=768, num_classes=num_classes).to(device)
+    
+    if Path(probe_ckpt).exists():
+        probe.load_state_dict(torch.load(probe_ckpt, map_location=device))
+        print(f"Loaded probe: {probe_ckpt}")
+    else:
+        print(f"Warning: No probe at {probe_ckpt}")
+    probe.eval()
 
-# load census
-print("Loading census...")
-census = dict(np.load("results/head_profiles_cls.npz"))
-census = {k: torch.tensor(v) for k, v in census.items()}
+    # loader
+    if args.dataset == "ade20k":
+        loaders = get_loaders_fn(batch_size=args.batch_size)
+        val_loader = loaders["val"] if isinstance(loaders, dict) else loaders[1]
+    else:
+        _, val_loader = get_loaders_fn(batch_size=args.batch_size)
 
-# evaluator
-evaluator = PruningEvaluator(backbone, probe, val_loader, task="cls")
+    # census
+    census = dict(np.load(args.census))
+    census = {k: torch.tensor(v) for k, v in census.items()}
 
-# baseline accuracy
-print("Evaluating baseline...")
-baseline_acc = evaluator.evaluate(torch.ones(12, 12), num_batches=100)
-print(f"Baseline accuracy: {baseline_acc:.4f}")
+    evaluator = PruningEvaluator(backbone, probe, val_loader, task=task)
 
-# random strategy — n_runs=5 since order varies
-print("Running random strategy (n_runs=5)...")
-random_means, random_stds = evaluator.run_pruning_strategy(
-    PruningEvaluator.random_strategy, census, n_steps=72, n_runs=5
-)
-print("Done.")
+    # Baseline performance
+    baseline_acc = evaluator.evaluate(torch.ones(12, 12), num_batches=100)
+    print(f"Baseline Accuracy ({task}): {baseline_acc:.4f}")
 
-# magnitude strategy — deterministic, n_runs=1
-print("Running magnitude strategy...")
-mag_means, mag_stds = evaluator.run_pruning_strategy(
-    PruningEvaluator.magnitude_strategy, census, n_steps=72, n_runs=1
-)
-print("Done.")
+    # Results dictionary
+    results = {
+        "baseline_acc": np.array([baseline_acc])
+    }
 
-# importance strategy — deterministic, n_runs=1
-print("Running importance strategy...")
-imp_means, imp_stds = evaluator.run_pruning_strategy(
-    PruningEvaluator.importance_strategy, census, n_steps=72, n_runs=1
-)
-print("Done.")
+    # Run standard baselines
+    for name, strategy, runs in [
+        ("random", PruningEvaluator.random_strategy, 5),
+        ("magnitude", PruningEvaluator.magnitude_strategy, 1),
+        ("importance", PruningEvaluator.importance_strategy, 1),
+        ("uniform", PruningEvaluator.uniform_strategy, 1)
+    ]:
+        print(f"Running {name} strategy...")
+        means, stds = evaluator.run_pruning_strategy(strategy, census, n_steps=72, n_runs=runs)
+        results[f"{name}_means"] = means.numpy()
+        results[f"{name}_stds"] = stds.numpy()
 
-print("Running uniform strategy...")
-uni_means, uni_stds = evaluator.run_pruning_strategy(
-    PruningEvaluator.uniform_strategy, census, n_steps=72, n_runs=1
-)
-print("Done.")
+    # Optional RL Agent block
+    if args.run_agent:
+        print("Loading PPO RL agent...")
+        ppo_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
+        if Path(args.rl_agent_ckpt).exists():
+            ppo_net.load_state_dict(torch.load(args.rl_agent_ckpt, map_location=device))
+            print(f"RL Agent loaded from {args.rl_agent_ckpt}")
+        else:
+            print(f"Warning: RL Agent not found, using random weights.")
+        
+        ppo_strategy = PPOAgentStrategy(ppo_net, device=device)
+        print("Running RL (PPO) strategy...")
+        rl_means, rl_stds = evaluator.run_pruning_strategy(ppo_strategy, census, n_steps=72, n_runs=1)
+        results["rl_means"] = rl_means.numpy()
+        results["rl_stds"] = rl_stds.numpy()
 
-print("Loading PPO RL agent...")
-ppo_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
-# Load the weights you saved after training
-ppo_net.load_state_dict(torch.load("checkpoints/rl_agent_ppo.pt", map_location=device))
-ppo_strategy = PPOAgentStrategy(ppo_net, device=device)
+    # Save
+    print(f"Saving results to {output_file}...")
+    np.savez(output_file, **results)
+    print("All done.")
 
-print("Running RL (PPO) strategy...")
-rl_means, rl_stds = evaluator.run_pruning_strategy(
-    ppo_strategy, census, n_steps=72, n_runs=1
-)
-print("Done.")
-
-# save
-np.savez(
-    "results/baseline_pruning_cls_results.npz",
-    baseline_acc=np.array([baseline_acc]),
-    random_means=random_means.numpy(),
-    random_stds=random_stds.numpy(),
-    magnitude_means=mag_means.numpy(),
-    magnitude_stds=mag_stds.numpy(),
-    importance_means=imp_means.numpy(),
-    importance_stds=imp_stds.numpy(),
-    rl_means=rl_means.numpy(),
-    rl_stds=rl_stds.numpy(),
-    uniform_means=uni_means.numpy(),
-    uniform_stds=uni_stds.numpy(),
-)
-print("Saved baseline_pruning_cls_results.npz")
+if __name__ == "__main__":
+    main()

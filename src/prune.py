@@ -16,20 +16,67 @@ class PruningEvaluator:
         hooks = self._apply_pruning_hooks(self.backbone, head_mask)
         correct = 0
         total = 0
+        hist = None # For segmentation mIoU
         device = next(self.probe.parameters()).device
         with torch.no_grad():
-            for i, (imgs, labels) in enumerate(self.dataloader):
+            for i, batch in enumerate(self.dataloader):
                 if i >= num_batches:
                     break
-                imgs, labels = imgs.to(device), labels.to(device)
-                feats = self.backbone(imgs)["cls_token"]
-                outputs = self.probe(feats)
-                preds = outputs.argmax(dim=-1)
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
+                
+                if self.task == "cls":
+                    imgs, labels = batch
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    feats = self.backbone(imgs)["cls_token"]
+                    outputs = self.probe(feats)
+                    preds = outputs.argmax(dim=-1)
+                    correct += (preds == labels).sum().item()
+                    total += labels.size(0)
+                elif self.task == "seg":
+                    import torch.nn.functional as F
+                    imgs, labels = batch["image"], batch["mask"]
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    feats = self.backbone(imgs)
+                    outputs = self.probe(feats)
+                    outputs = F.interpolate(outputs, size=labels.shape[-2:], mode="bilinear", align_corners=False)
+                    preds = outputs.argmax(dim=1)
+                    valid = labels != -1
+                    
+                    if hist is None:
+                        num_classes = outputs.shape[1]
+                        hist = torch.zeros(num_classes, num_classes, device=device)
+                    
+                    label_v = labels[valid]
+                    pred_v = preds[valid]
+                    inds = label_v * num_classes + pred_v
+                    hist += torch.bincount(inds, minlength=num_classes**2).reshape(num_classes, num_classes)
+                    
+                elif self.task == "det":
+                    from baseline.backbone import build_targets
+                    imgs, targets = batch
+                    imgs = imgs.to(device)
+                    feats = self.backbone(imgs)
+                    cls_logits, box_preds, obj_logits = self.probe(feats)
+                    grid_size = cls_logits.shape[-1]
+                    obj_t, cls_t, _ = build_targets(targets, grid_size=grid_size, device=device)
+                    
+                    obj_mask = obj_t > 0.5
+                    if obj_mask.sum() > 0:
+                        cls_preds = cls_logits.argmax(dim=1)
+                        
+                        if cls_preds.dim() == 3 and obj_mask.dim() == 4:
+                            obj_mask = obj_mask.squeeze(1)
+                            
+                        correct += (cls_preds[obj_mask] == cls_t[obj_mask]).sum().item()
+                        total += obj_mask.sum().item()
         for h in hooks:
             h.remove()
-        return correct / total
+            
+        if self.task == "seg":
+            iou = torch.diag(hist) / (hist.sum(dim=1) + hist.sum(dim=0) - torch.diag(hist) + 1e-6)
+            valid_classes = hist.sum(dim=1) > 0
+            return iou[valid_classes].mean().item()
+            
+        return correct / max(total, 1)
 
     def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
         # strategy: function that given current mask + census data

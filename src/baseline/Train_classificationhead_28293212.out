@@ -1,0 +1,77 @@
+Using device: cuda
+Starting training...
+Epoch 0 | Loss: 24248.6611 | Val Acc: 0.7796
+Epoch 1 | Loss: 21629.9000 | Val Acc: 0.7836
+Epoch 2 | Loss: 20512.6394 | Val Acc: 0.7872
+Epoch 3 | Loss: 19837.1368 | Val Acc: 0.7848
+Epoch 4 | Loss: 19257.4407 | Val Acc: 0.7882
+Final Validation Accuracy: 0.7882
+Saving the classification head...
+Training complete and model saved.
+Example predictions saved to results/imagenet_examples.png
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@hpc.dtu.dk>
+Subject: Job 28293212: <Train_classificationhead> in cluster <dcc> Done
+
+Job <Train_classificationhead> was submitted from host <hpclogin1> by user <s194504> in cluster <dcc> at Sun Apr 26 16:14:57 2026
+Job was executed on host(s) <4*n-62-20-12>, in queue <gpuv100>, as user <s194504> in cluster <dcc> at Sun Apr 26 16:14:58 2026
+</zhome/29/b/146867> was used as the home directory.
+</zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/src/baseline> was used as the working directory.
+Started at Sun Apr 26 16:14:58 2026
+Terminated at Mon Apr 27 00:13:45 2026
+Results reported at Mon Apr 27 00:13:45 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J Train_classificationhead          # Job name
+#BSUB -q gpuv100             # Queue name (check with bqueues; use gpuv100 or gpua100 typically)
+#BSUB -n 4                       # Number of CPU cores
+#BSUB -R "span[hosts=1]"         # Run on a single node
+#BSUB -R "rusage[mem=16GB]"      # Memory per host (16 GB is usually fine)
+#BSUB -W 15:00                # Wall time (HH:MM) - Increased to 5 hours for 30 models
+#BSUB -gpu "num=1:mode=exclusive_process"  # Request 1 GPU
+#BSUB -o Train_classificationhead_%J.out  # Standard output
+#BSUB -e Train_classificationhead_%J.err  # Standard error
+
+# --- ENVIRONMENT SETUP ---
+# Always go to your project folder
+cd /zhome/29/b/146867/ADLCV || exit
+
+# Activate your virtual environment
+source .venv/bin/activate
+cd Proj/02501_AttentionSurgeon/src/baseline || exit
+# Optional: make sure CUDA is visible (good habit)
+export CUDA_VISIBLE_DEVICES=0
+
+python train_imagenet_classification.py
+
+
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   73138.00 sec.
+    Max Memory :                                 6283 MB
+    Average Memory :                             5605.40 MB
+    Total Requested Memory :                     65536.00 MB
+    Delta Memory :                               59253.00 MB
+    Max Swap :                                   -
+    Max Processes :                              12
+    Max Threads :                                45
+    Run time :                                   28727 sec.
+    Turnaround time :                            28728 sec.
+
+The output (if any) is above this job summary.
+
+
+
+PS:
+
+Read file <Train_classificationhead_28293212.err> for stderr output of this job.
+

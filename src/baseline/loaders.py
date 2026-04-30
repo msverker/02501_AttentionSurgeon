@@ -114,8 +114,8 @@ def collate_fn(batch):
 
 
 def get_coco_dataloaders(batch_size=8):
-    root = "/work3/s216143/02501_AttentionSurgeon/data/coco/val2017"
-    ann = "/work3/s216143/02501_AttentionSurgeon/data/coco/annotations/instances_val2017.json"
+    root = "/work3/s194504/02501_AttentionSurgeon/data/coco/val2017"
+    ann = "/work3/s194504/02501_AttentionSurgeon/data/coco/annotations/instances_val2017.json"
 
     dataset = CocoDataset(root, ann)
 
