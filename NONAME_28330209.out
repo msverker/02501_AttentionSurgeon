@@ -1,0 +1,70 @@
+Loaded dependency [python3/3.10.12]: sqlite3/3.42.0
+Loaded module: python3/3.10.12
+
+Loading python3/3.10.12
+  Loading requirement: sqlite3/3.42.0
+Loaded module: cuda/12.1
+No Nvidia-GPUs found in this machine, please use a GPU-node
+
+
+
+Loading cuda/12.1
+  ERROR: Module evaluation aborted
+Starting ImageNet Pruning Evaluation...
+Traceback (most recent call last):
+  File "/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/src/run_baseline_pruning.py", line 5, in <module>
+    from baseline.backbone import DinoV2Backbone, ClassificationHead, ADE20KHead, CocoHead
+  File "/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/src/baseline/backbone.py", line 3, in <module>
+    from transformers import AutoModel
+  File "/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/.venv/lib/python3.12/site-packages/transformers/__init__.py", line 792, in <module>
+    import_structure = define_import_structure(Path(__file__).parent / "models", prefix="models")
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/.venv/lib/python3.12/site-packages/transformers/utils/import_utils.py", line 2985, in define_import_structure
+    import_structure = create_import_structure_from_path(module_path)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/.venv/lib/python3.12/site-packages/transformers/utils/import_utils.py", line 2702, in create_import_structure_from_path
+    import_structure[entry.name] = create_import_structure_from_path(entry.path)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/.venv/lib/python3.12/site-packages/transformers/utils/import_utils.py", line 2718, in create_import_structure_from_path
+    with open(os.path.join(module_path, module_name), encoding="utf-8") as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen codecs>", line 309, in __init__
+KeyboardInterrupt
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@hpc.dtu.dk>
+Subject: Job 28330209: <NONAME> in cluster <dcc> Exited
+
+Job <NONAME> was submitted from host <hpclogin1> by user <s194504> in cluster <dcc> at Thu Apr 30 15:11:32 2026
+Job was executed on host(s) <n-62-11-68>, in queue <hpc>, as user <s194504> in cluster <dcc> at Thu Apr 30 15:11:33 2026
+</zhome/29/b/146867> was used as the home directory.
+</zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon> was used as the working directory.
+Started at Thu Apr 30 15:11:33 2026
+Terminated at Thu Apr 30 15:12:02 2026
+Results reported at Thu Apr 30 15:12:02 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+submit_rl_agent_eval.sh
+------------------------------------------------------------
+
+TERM_OWNER: job killed by owner.
+Exited with exit code 130.
+
+Resource usage summary:
+
+    CPU time :                                   5.69 sec.
+    Max Memory :                                 250 MB
+    Average Memory :                             208.00 MB
+    Total Requested Memory :                     1024.00 MB
+    Delta Memory :                               774.00 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                5
+    Run time :                                   29 sec.
+    Turnaround time :                            30 sec.
+
+The output (if any) is above this job summary.
+

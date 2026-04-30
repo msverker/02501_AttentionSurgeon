@@ -19,10 +19,13 @@ source .venv/bin/activate
 # Ensure logs directory exists for safety
 mkdir -p results logs
 
-echo "Starting ADE20K RL Agent Pruning Evaluation..."
-python src/run_baseline_pruning.py --dataset ade20k --batch-size 4 --run-agent --only-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_ade20k.pt
+echo "Starting ImageNet Pruning Evaluation..."
+python src/run_baseline_pruning.py --dataset imagenet --batch-size 32 --census npz_weights/old/head_profiles_cls.npz --run-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_imagenet.pt
 
-echo "Starting COCO RL Agent Pruning Evaluation..."
-python src/run_baseline_pruning.py --dataset coco --batch-size 4 --run-agent --only-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_coco.pt
+echo "Starting ADE20K Pruning Evaluation..."
+python src/run_baseline_pruning.py --dataset ade20k --batch-size 4 --census npz_weights/head_profiles_segmentation.npz --run-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_ade20k.pt
+
+echo "Starting COCO Pruning Evaluation..."
+python src/run_baseline_pruning.py --dataset coco --batch-size 4 --census npz_weights/head_profiles_object_detection.npz --run-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_coco.pt
 
 echo "Job finished."

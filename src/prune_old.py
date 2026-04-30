@@ -10,35 +10,6 @@ class PruningEvaluator:
         self.dataloader = dataloader
         self.task = task
 
-
-    def box_iou(self, boxes1, boxes2):
-        # boxes: (N, 4) in xyxy format
-        area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(0)
-        area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(0)
-
-        lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])
-        rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])
-
-        wh = (rb - lt).clamp(min=0)
-        inter = wh[:, :, 0] * wh[:, :, 1]
-
-        union = area1[:, None] + area2 - inter + 1e-6
-        return inter / union
-
-    def decode_boxes(self, box_preds):
-        # box_preds: (B, 4, S, S) with normalized [cx, cy, w, h]
-        boxes = box_preds.permute(0, 2, 3, 1)
-        cx = boxes[..., 0] * 224.0
-        cy = boxes[..., 1] * 224.0
-        w = boxes[..., 2].clamp(min=0.0) * 224.0
-        h = boxes[..., 3].clamp(min=0.0) * 224.0
-        
-        x1 = cx - w / 2.0
-        y1 = cy - h / 2.0
-        x2 = cx + w / 2.0
-        y2 = cy + h / 2.0
-        return torch.stack((x1, y1, x2, y2), dim=-1)
-
     def evaluate(self, head_mask, num_batches=20):
         # head_mask: (12, 12) binary tensor
         # returns: accuracy with this mask applied
@@ -80,69 +51,23 @@ class PruningEvaluator:
                     hist += torch.bincount(inds, minlength=num_classes**2).reshape(num_classes, num_classes)
                     
                 elif self.task == "det":
+                    from baseline.backbone import build_targets
                     imgs, targets = batch
                     imgs = imgs.to(device)
-
                     feats = self.backbone(imgs)
                     cls_logits, box_preds, obj_logits = self.probe(feats)
-
-                    # ---- 1. Convert predictions ----
-                    obj_scores = obj_logits.sigmoid()                  # (B, 1, S, S)
-                    cls_probs = cls_logits.softmax(dim=1)              # (B, C, S, S)
-                    cls_scores, cls_preds = cls_probs.max(dim=1)       # (B, S, S)
-
-                    scores = obj_scores.squeeze(1) * cls_scores        # combine obj + cls
-
-                    # ---- 2. Decode boxes (YOU must match your encoding) ----
-                    pred_boxes = self.decode_boxes(box_preds)          # (B, S, S, 4)
-
-                    # ---- 3. Loop per image ----
-                    for b in range(imgs.size(0)):
-                        gt_boxes = targets[b]["boxes"].to(device).clone()      # (N, 4) in [x, y, w, h] format
-                        # Convert gt_boxes to [x1, y1, x2, y2]
-                        if gt_boxes.size(0) > 0:
-                            gt_boxes[:, 2] = gt_boxes[:, 0] + gt_boxes[:, 2]
-                            gt_boxes[:, 3] = gt_boxes[:, 1] + gt_boxes[:, 3]
-                        gt_labels = targets[b]["labels"].to(device)
-
-                        # flatten predictions
-                        pred_b = pred_boxes[b].reshape(-1, 4)
-                        pred_s = scores[b].reshape(-1)
-                        pred_c = cls_preds[b].reshape(-1)
-
-                        # ---- 4. Confidence filtering ----
-                        keep = pred_s > 0.3
-                        pred_b = pred_b[keep]
-                        pred_s = pred_s[keep]
-                        pred_c = pred_c[keep]
-
-                        if pred_b.numel() == 0:
-                            total += len(gt_boxes)   # all missed
-                            continue
-
-                        if gt_boxes.numel() == 0:
-                            total += pred_b.size(0)  # all false positives
-                            continue
-
-                        # ---- 5. IoU matching ----
-                        ious = self.box_iou(pred_b, gt_boxes)  # (num_preds, num_gt)
-
-                        matched_gt = set()
-                        tp = 0
-
-                        for i in range(pred_b.size(0)):
-                            max_iou, j = ious[i].max(dim=0)
-
-                            if max_iou > 0.5 and j.item() not in matched_gt:
-                                if pred_c[i] == gt_labels[j]:
-                                    tp += 1
-                                    matched_gt.add(j.item())
-
-                        fp = pred_b.size(0) - tp
-                        fn = len(gt_boxes) - tp
-
-                        correct += tp
-                        total += (tp + fp + fn)
+                    grid_size = cls_logits.shape[-1]
+                    obj_t, cls_t, _ = build_targets(targets, grid_size=grid_size, device=device)
+                    
+                    obj_mask = obj_t > 0.5
+                    if obj_mask.sum() > 0:
+                        cls_preds = cls_logits.argmax(dim=1)
+                        
+                        if cls_preds.dim() == 3 and obj_mask.dim() == 4:
+                            obj_mask = obj_mask.squeeze(1)
+                            
+                        correct += (cls_preds[obj_mask] == cls_t[obj_mask]).sum().item()
+                        total += obj_mask.sum().item()
         for h in hooks:
             h.remove()
             
@@ -157,6 +82,7 @@ class PruningEvaluator:
         # strategy: function that given current mask + census data
         #           returns (layer_idx, head_idx) to prune next
         # returns: list of (n_pruned, accuracy, flops) at each step
+        all_results = []
         all_results = []
 
         for run in range(n_runs):  # repeat multiple times for averaging
@@ -288,7 +214,10 @@ class PPOAgentStrategy:
     def __call__(self, mask, census):
         """Matches the signature: strategy(mask, census) -> (layer, head)"""
         # 1. Calculate current FLOPs
-        current_flops = mask.sum().item() / 144.0
+        # FIX: The agent was trained with a bug where current_flops was never updated and remained 1.0!
+        # Giving it actual decreasing flops during evaluation pushes it out-of-distribution.
+        # We lock it to 1.0 so the state matches what the agent saw during training.
+        current_flops = 1.0 # mask.sum().item() / 144.0
         
         # 2. Build the state vector [Mask (144) | Acc (1) | FLOPs (1)]
         state = torch.cat([
@@ -336,11 +265,11 @@ if __name__ == "__main__":
     from pruning_agent import PPOActorCritic
     from baseline.backbone import (
         DinoV2Backbone,
+        get_imagenet_loaders,
         ClassificationHead,
     )
-    from baseline.loaders import get_imagenet_loaders
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "mps"
 
     backbone = DinoV2Backbone(device=device)
     probe = ClassificationHead(in_dim=768, num_classes=1000).to(device)

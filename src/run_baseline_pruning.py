@@ -73,6 +73,13 @@ def main():
 
     # census
     census = dict(np.load(args.census))
+    
+    # standardize the importance key
+    if "importance_seg" in census:
+        census["importance"] = census.pop("importance_seg")
+    elif "importance_det" in census:
+        census["importance"] = census.pop("importance_det")
+        
     census = {k: torch.tensor(v) for k, v in census.items()}
 
     evaluator = PruningEvaluator(backbone, probe, val_loader, task=task)

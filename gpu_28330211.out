@@ -1,0 +1,108 @@
+Starting ImageNet Pruning Evaluation...
+Loaded probe: checkpoints/probe_imagenet.pt
+Baseline Accuracy (cls): 0.8013
+Running random strategy...
+Running magnitude strategy...
+Running importance strategy...
+Starting ADE20K Pruning Evaluation...
+Loaded probe: checkpoints/ade20k_head.pth
+Baseline Accuracy (seg): 0.3172
+Running random strategy...
+Running magnitude strategy...
+Running importance strategy...
+Running uniform strategy...
+Loading PPO RL agent...
+RL Agent loaded from checkpoints/rl_agent_ppo_ade20k.pt with input_dim=147 and action_dim=145
+Running RL (PPO) strategy...
+Saving results to results/baseline_pruning_ade20k_results.npz...
+All done.
+Starting COCO Pruning Evaluation...
+Loaded probe: checkpoints/coco_head.pth
+loading annotations into memory...
+Done (t=0.43s)
+creating index...
+index created!
+Baseline Accuracy (det): 0.3843
+Running random strategy...
+Running magnitude strategy...
+Running importance strategy...
+Running uniform strategy...
+Loading PPO RL agent...
+RL Agent loaded from checkpoints/rl_agent_ppo_coco.pt with input_dim=147 and action_dim=145
+Running RL (PPO) strategy...
+Saving results to results/baseline_pruning_coco_results.npz...
+All done.
+Job finished.
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@hpc.dtu.dk>
+Subject: Job 28330211: <AttentionSurgeon_RL_EVAL> in cluster <dcc> Done
+
+Job <AttentionSurgeon_RL_EVAL> was submitted from host <hpclogin1> by user <s194504> in cluster <dcc> at Thu Apr 30 15:11:53 2026
+Job was executed on host(s) <4*n-62-20-16>, in queue <gpuv100>, as user <s194504> in cluster <dcc> at Thu Apr 30 15:13:09 2026
+</zhome/29/b/146867> was used as the home directory.
+</zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon> was used as the working directory.
+Started at Thu Apr 30 15:13:09 2026
+Terminated at Thu Apr 30 16:03:25 2026
+Results reported at Thu Apr 30 16:03:25 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/sh
+### General options
+#BSUB -q gpuv100
+#BSUB -J AttentionSurgeon_RL_EVAL
+#BSUB -n 4
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -W 02:00
+#BSUB -R "rusage[mem=4GB]"
+#BSUB -o gpu_%J.out
+#BSUB -e gpu_%J.err
+
+# Load modules
+module load python3/3.10.12
+module load cuda/12.1
+
+# Activate virtual environment
+source .venv/bin/activate
+
+# Ensure logs directory exists for safety
+mkdir -p results logs
+
+echo "Starting ImageNet Pruning Evaluation..."
+python src/run_baseline_pruning.py --dataset imagenet --batch-size 32 --census npz_weights/old/head_profiles_cls.npz --run-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_imagenet.pt
+
+echo "Starting ADE20K Pruning Evaluation..."
+python src/run_baseline_pruning.py --dataset ade20k --batch-size 4 --census npz_weights/head_profiles_segmentation.npz --run-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_ade20k.pt
+
+echo "Starting COCO Pruning Evaluation..."
+python src/run_baseline_pruning.py --dataset coco --batch-size 4 --census npz_weights/head_profiles_object_detection.npz --run-agent --rl-agent-ckpt checkpoints/rl_agent_ppo_coco.pt
+
+echo "Job finished."
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   7254.00 sec.
+    Max Memory :                                 3490 MB
+    Average Memory :                             2562.43 MB
+    Total Requested Memory :                     16384.00 MB
+    Delta Memory :                               12894.00 MB
+    Max Swap :                                   -
+    Max Processes :                              12
+    Max Threads :                                43
+    Run time :                                   3016 sec.
+    Turnaround time :                            3092 sec.
+
+The output (if any) is above this job summary.
+
+
+
+PS:
+
+Read file <gpu_28330211.err> for stderr output of this job.
+

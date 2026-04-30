@@ -1,15 +1,0 @@
-Loaded dependency [python3/3.10.12]: sqlite3/3.42.0
-Loaded module: python3/3.10.12
-
-Loading python3/3.10.12
-  Loading requirement: sqlite3/3.42.0
-Loaded module: cuda/12.1
-/zhome/29/b/146867/.lsbatch/1777539231.28329163.shell: line 25: cd: ADLCV/Proj/02501_AttentionSurgeon: No such file or directory
-Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Loading weights:   0%|          | 0/223 [00:00<?, ?it/s]Loading weights: 100%|██████████| 223/223 [00:00<00:00, 2360.10it/s]
-/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/src/run_baseline_pruning.py:60: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  probe.load_state_dict(torch.load(probe_ckpt, map_location=device))
-Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Loading weights:   0%|          | 0/223 [00:00<?, ?it/s]Loading weights: 100%|██████████| 223/223 [00:00<00:00, 10657.69it/s]
-/zhome/29/b/146867/ADLCV/Proj/02501_AttentionSurgeon/src/run_baseline_pruning.py:60: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  probe.load_state_dict(torch.load(probe_ckpt, map_location=device))
