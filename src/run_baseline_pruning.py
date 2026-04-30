@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="Output file for results")
     parser.add_argument("--rl-agent-ckpt", type=str, default="checkpoints/rl_agent_ppo.pt", help="Path to RL agent checkpoint")
     parser.add_argument("--run-agent", action="store_true", help="Whether to also run the RL pruning agent")
+    parser.add_argument("--only-agent", action="store_true", help="If true, only runs the agent and appends purely to existing .npz")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -81,31 +82,40 @@ def main():
     print(f"Baseline Accuracy ({task}): {baseline_acc:.4f}")
 
     # Results dictionary
-    results = {
-        "baseline_acc": np.array([baseline_acc])
-    }
+    results = {}
+    if args.only_agent and Path(output_file).exists():
+        existing_data = np.load(output_file)
+        results = {k: existing_data[k] for k in existing_data.files}
+        
+    results["baseline_acc"] = np.array([baseline_acc])
 
-    # Run standard baselines
-    for name, strategy, runs in [
-        ("random", PruningEvaluator.random_strategy, 5),
-        ("magnitude", PruningEvaluator.magnitude_strategy, 1),
-        ("importance", PruningEvaluator.importance_strategy, 1),
-        ("uniform", PruningEvaluator.uniform_strategy, 1)
-    ]:
-        print(f"Running {name} strategy...")
-        means, stds = evaluator.run_pruning_strategy(strategy, census, n_steps=72, n_runs=runs)
-        results[f"{name}_means"] = means.numpy()
-        results[f"{name}_stds"] = stds.numpy()
+    # Run standard baselines if not skipping
+    if not args.only_agent:
+        for name, strategy, runs in [
+            ("random", PruningEvaluator.random_strategy, 5),
+            ("magnitude", PruningEvaluator.magnitude_strategy, 1),
+            ("importance", PruningEvaluator.importance_strategy, 1),
+            ("uniform", PruningEvaluator.uniform_strategy, 1)
+        ]:
+            print(f"Running {name} strategy...")
+            means, stds = evaluator.run_pruning_strategy(strategy, census, n_steps=72, n_runs=runs)
+            results[f"{name}_means"] = means.numpy()
+            results[f"{name}_stds"] = stds.numpy()
 
     # Optional RL Agent block
     if args.run_agent:
         print("Loading PPO RL agent...")
-        ppo_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
         if Path(args.rl_agent_ckpt).exists():
-            ppo_net.load_state_dict(torch.load(args.rl_agent_ckpt, map_location=device))
-            print(f"RL Agent loaded from {args.rl_agent_ckpt}")
+            state_dict = torch.load(args.rl_agent_ckpt, map_location="cpu", weights_only=True)
+            input_dim = state_dict['actor.0.weight'].shape[1]
+            action_dim = state_dict['actor.4.bias'].shape[0] if 'actor.4.bias' in state_dict else 144
+            ppo_net = PPOActorCritic(input_dim=input_dim, action_dim=action_dim).to(device)
+            ppo_net.load_state_dict(state_dict)
+            ppo_net = ppo_net.to(device)
+            print(f"RL Agent loaded from {args.rl_agent_ckpt} with input_dim={input_dim} and action_dim={action_dim}")
         else:
-            print(f"Warning: RL Agent not found, using random weights.")
+            ppo_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
+            print(f"Warning: RL Agent not found at {args.rl_agent_ckpt}, using random weights.")
         
         ppo_strategy = PPOAgentStrategy(ppo_net, device=device)
         print("Running RL (PPO) strategy...")

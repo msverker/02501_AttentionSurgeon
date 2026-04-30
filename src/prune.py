@@ -224,11 +224,23 @@ class PPOAgentStrategy:
         
         valid_mask = (mask.flatten() == 1.0).to(self.device)
         
+        # Determine actual expected input size to handle legacy agent (e.g. 147 dims vs 146)
+        expected_dim = self.policy_network.actor[0].weight.shape[1]
+        if state.shape[0] < expected_dim:
+            pad = expected_dim - state.shape[0]
+            # assume padded with ones for valid mask logic or zeros for feature dims
+            state = torch.cat([state, torch.ones(pad, device=self.device)])
+        
         # 3. Get action probabilities from the Actor network
         with torch.no_grad():
             action_logits = self.policy_network.actor(state)
             
-            # Mask out already-pruned heads
+            # If the model has 145 outputs (144 heads + 1 stop action),
+            # pad valid_mask with False so it never stops early during evaluation
+            if action_logits.shape[-1] == 145:
+                valid_mask = torch.cat([valid_mask, torch.tensor([False], device=self.device)])
+            
+            # Mask out already-pruned heads and invalid actions
             action_logits[~valid_mask] = -1e8
             
             # For EVALUATION, we don't sample randomly. We pick the absolute best action.
