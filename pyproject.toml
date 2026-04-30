@@ -3,20 +3,20 @@ name = "02501-attentionsurgeon"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "matplotlib>=3.10.9",
-    "pandas>=3.0.2",
-    "pycocotools>=2.0.11",
-    "scikit-learn>=1.8.0",
+    "matplotlib>=3.10.0",
+    "pandas>=2.2.0",
+    "pycocotools>=2.0.7",
+    "scikit-learn>=1.5.0",
     "seaborn>=0.13.2",
-    "torch>=2.11.0",
-    "torchvision>=0.26.0",
-    "transformers>=5.6.1",
+    "torch>=2.4.0",       # Adjusted to a valid existing version
+    "torchvision>=0.19.0", # Matches Torch 2.4.x
+    "transformers>=4.40.0",
 ]
 
 
 [[tool.uv.index]]
 name = "pytorch"
-url = "https://download.pytorch.org/whl/cu128"
+url = "https://download.pytorch.org/whl/cu118" # Hit the CUDA 11.8 index
 explicit = true
 
 [tool.uv.sources]

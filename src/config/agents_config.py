@@ -16,11 +16,11 @@ DATASET_CONFIGS = {
         "reward_floor": -5.0,       # Shield remains the same
     },
     "imagenet": {
-        "alpha": 1.0,               # Linear penalty for loss degradation
+        "alpha": 0.5,               # Linear penalty for loss degradation
         "beta": 5.0,                # High reward for sparsity
-        "gamma": 0.5,               # Exponential penalty multiplier
-        "epsilon": 0.10,            # 10% loss degradation is "free"
-        "safe_prune_bonus": 0.10,   # Salary for staying alive
-        "reward_floor": -1.0,       # Max punishment per step
+        "gamma": 0.1,               # Exponential penalty multiplier
+        "epsilon": 0.2,            # 20% loss degradation is "free"
+        "safe_prune_bonus": 0.2,   # Salary for staying alive
+        "reward_floor": -4.0,       # Max punishment per step
     }
 }
