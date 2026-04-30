@@ -16,20 +16,67 @@ class PruningEvaluator:
         hooks = self._apply_pruning_hooks(self.backbone, head_mask)
         correct = 0
         total = 0
+        hist = None # For segmentation mIoU
         device = next(self.probe.parameters()).device
         with torch.no_grad():
-            for i, (imgs, labels) in enumerate(self.dataloader):
+            for i, batch in enumerate(self.dataloader):
                 if i >= num_batches:
                     break
-                imgs, labels = imgs.to(device), labels.to(device)
-                feats = self.backbone(imgs)["cls_token"]
-                outputs = self.probe(feats)
-                preds = outputs.argmax(dim=-1)
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
+                
+                if self.task == "cls":
+                    imgs, labels = batch
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    feats = self.backbone(imgs)["cls_token"]
+                    outputs = self.probe(feats)
+                    preds = outputs.argmax(dim=-1)
+                    correct += (preds == labels).sum().item()
+                    total += labels.size(0)
+                elif self.task == "seg":
+                    import torch.nn.functional as F
+                    imgs, labels = batch["image"], batch["mask"]
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    feats = self.backbone(imgs)
+                    outputs = self.probe(feats)
+                    outputs = F.interpolate(outputs, size=labels.shape[-2:], mode="bilinear", align_corners=False)
+                    preds = outputs.argmax(dim=1)
+                    valid = labels != -1
+                    
+                    if hist is None:
+                        num_classes = outputs.shape[1]
+                        hist = torch.zeros(num_classes, num_classes, device=device)
+                    
+                    label_v = labels[valid]
+                    pred_v = preds[valid]
+                    inds = label_v * num_classes + pred_v
+                    hist += torch.bincount(inds, minlength=num_classes**2).reshape(num_classes, num_classes)
+                    
+                elif self.task == "det":
+                    from baseline.backbone import build_targets
+                    imgs, targets = batch
+                    imgs = imgs.to(device)
+                    feats = self.backbone(imgs)
+                    cls_logits, box_preds, obj_logits = self.probe(feats)
+                    grid_size = cls_logits.shape[-1]
+                    obj_t, cls_t, _ = build_targets(targets, grid_size=grid_size, device=device)
+                    
+                    obj_mask = obj_t > 0.5
+                    if obj_mask.sum() > 0:
+                        cls_preds = cls_logits.argmax(dim=1)
+                        
+                        if cls_preds.dim() == 3 and obj_mask.dim() == 4:
+                            obj_mask = obj_mask.squeeze(1)
+                            
+                        correct += (cls_preds[obj_mask] == cls_t[obj_mask]).sum().item()
+                        total += obj_mask.sum().item()
         for h in hooks:
             h.remove()
-        return correct / total
+            
+        if self.task == "seg":
+            iou = torch.diag(hist) / (hist.sum(dim=1) + hist.sum(dim=0) - torch.diag(hist) + 1e-6)
+            valid_classes = hist.sum(dim=1) > 0
+            return iou[valid_classes].mean().item()
+            
+        return correct / max(total, 1)
 
     def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
         # strategy: function that given current mask + census data
@@ -110,19 +157,22 @@ class PruningEvaluator:
             mask = torch.ones(12, 12)
             run_results = []
             
+            if hasattr(strategy, 'reset'):
+                strategy.reset()
+            
             for step in range(n_steps):
                 layer, head = strategy(mask, census)
                 mask[layer, head] = 0
                 acc = self.evaluate(mask)
-                
-                # --- ADD THIS LINE ---
-                # Feed the new accuracy back to the RL agent for its next state
-                if hasattr(strategy, 'update_acc'):
-                    strategy.update_acc(acc)
-                # ---------------------
-                
+                                
                 flops_ratio = (144 - (step + 1)) / 144
                 reward = acc * flops_ratio
+                
+                # Feed the new proxy-loss/reward back to the RL agent for its next state
+                if hasattr(strategy, 'update_state'):
+                    loss_proxy = 1.0 - acc # the proxy loss since evaluators return acc natively
+                    strategy.update_state(loss_proxy, float(reward))
+                    
                 run_results.append([acc, flops_ratio, reward])
                 
             all_results.append(run_results)
@@ -157,31 +207,46 @@ class PruningEvaluator:
         return hooks
     
 class PPOAgentStrategy:
-    def __init__(self, policy_network, device="cuda"):
+    def __init__(self, policy_network, device="cuda", env=None):
         self.policy_network = policy_network
         self.policy_network.eval()
         self.device = device
-        # Track accuracy for the state vector
-        self.current_acc = 1.0 
+        self.env = env
+        self.reset()
+        
+    def reset(self):
+        if self.env is not None:
+            self.current_state = self.env.reset()
+        else:
+            # Track state variables if env is isolated
+            self.current_loss = 1.0 # Using a placeholder / proxy for unpruned state
+            self.sparsity = 0.0
+            self.total_reward = 0.0
 
     def __call__(self, mask, census):
         """Matches the signature: strategy(mask, census) -> (layer, head)"""
-        # 1. Calculate current FLOPs
-        current_flops = mask.sum().item() / 144.0
-        
-        # 2. Build the state vector [Mask (144) | Acc (1) | FLOPs (1)]
-        state = torch.cat([
-            mask.flatten().to(self.device), 
-            torch.tensor([self.current_acc, current_flops]).to(self.device)
-        ])
-        
-        valid_mask = (mask.flatten() == 1.0).to(self.device)
+        if self.env is not None:
+            state = self.current_state
+            head_mask = (self.env.mask.flatten() == 1.0).to(self.device)
+        else:
+            # 1. Calculate current sparsity
+            self.sparsity = 1.0 - (mask.sum().item() / 144.0)
+            
+            # 2. Build the state vector [Mask (144) | Loss (1) | Sparsity (1) | Total Reward (1)]
+            state = torch.cat([
+                mask.flatten().to(self.device), 
+                torch.tensor([self.current_loss, self.sparsity, self.total_reward]).to(self.device)
+            ])
+            head_mask = (mask.flatten() == 1.0).to(self.device)
+            
+        stop_action_valid = torch.tensor([False], device=self.device) # STOP FUNCTION OFF (False)
+        valid_mask = torch.cat([head_mask, stop_action_valid])
         
         # 3. Get action probabilities from the Actor network
         with torch.no_grad():
             action_logits = self.policy_network.actor(state)
             
-            # Mask out already-pruned heads
+            # Mask out already-pruned heads & the stop action
             action_logits[~valid_mask] = -1e8
             
             # For EVALUATION, we don't sample randomly. We pick the absolute best action.
@@ -190,10 +255,18 @@ class PPOAgentStrategy:
         layer = action_idx // 12
         head = action_idx % 12
         
+        if self.env is not None:
+            self.last_action_idx = action_idx
+            
         return layer, head
         
-    def update_acc(self, new_acc):
-        self.current_acc = new_acc
+    def update_state(self, loss, reward):
+        if self.env is not None:
+            # ignore proxies, step the actual environment using last action
+            self.current_state, _, _ = self.env.step(self.last_action_idx)
+        else:
+            self.current_loss = loss
+            self.total_reward += reward
 
 
 if __name__ == "__main__":
@@ -203,9 +276,9 @@ if __name__ == "__main__":
     from pruning_agent import PPOActorCritic
     from baseline.backbone import (
         DinoV2Backbone,
-        get_imagenet_loaders,
         ClassificationHead,
     )
+    from baseline.loaders import get_imagenet_loaders
 
     device = "cuda" if torch.cuda.is_available() else "mps"
 
@@ -228,12 +301,26 @@ if __name__ == "__main__":
 
     print("Loading trained RL Agent...")
     # 2. Initialize the empty brain
-    agent_net = PPOActorCritic(input_dim=146, action_dim=144).to(device)
+    agent_net = PPOActorCritic(input_dim=147, action_dim=145).to(device)
     # 3. Load the trained weights
     agent_net.load_state_dict(torch.load("checkpoints/rl_agent_ppo.pt", map_location=device))
     
+    # 3.5. Load training environment for accurate real-time state extraction
+    import sys
+    sys.path.append(".")
+    from config.agents_config import DATASET_CONFIGS
+    from pruning_agent import TransformerPruningEnv
+    env_rl = TransformerPruningEnv(
+        backbone=backbone, 
+        probe=probe, 
+        dataloader=val_loader, 
+        device=device,
+        config=DATASET_CONFIGS,
+        dataset_name="imagenet"
+    )
+    
     # 4. Wrap it in your strategy class
-    rl_strategy = PPOAgentStrategy(agent_net, device=device)
+    rl_strategy = PPOAgentStrategy(agent_net, device=device, env=env_rl)
 
     # 5. Run the evaluation
     print("Testing RL Agent strategy for 2 steps...")
