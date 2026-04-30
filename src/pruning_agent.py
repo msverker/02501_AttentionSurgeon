@@ -84,6 +84,8 @@ class TransformerPruningEnv:
                     feats = self.backbone(imgs)
                     logits = self.probe(feats)
                     logits = F.interpolate(logits, size=labels.shape[-2:], mode="bilinear", align_corners=False)
+                    if labels.dim() == 4:
+                        labels = labels.squeeze(1)
                     loss = F.cross_entropy(logits, labels.long(), ignore_index=-1)
                     total_loss += loss.item()
                     total += 1
@@ -158,7 +160,7 @@ class TransformerPruningEnv:
         retention_loss = (self.baseline_loss - self.current_loss) / self.baseline_loss # Positive is better (loss decreased)
         penalty = max(0.0, (self.current_loss - self.baseline_loss) - self.epsilon)  
         reward = (self.alpha*retention_loss) + (self.beta * self.sparsity) - (self.gamma * penalty**2)
-        reward += 0.1
+        reward += self.config['safe_prune_bonus']
         done = False
         
         reward = max(self.config['reward_floor'], reward) # Ensure reward is not too negative to destabilize training

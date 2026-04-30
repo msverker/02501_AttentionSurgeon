@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-
+from pruning_agent import TransformerPruningEnv
 
 class PruningEvaluator:
     def __init__(self, backbone, probe, dataloader, task="cls"):
@@ -51,23 +51,61 @@ class PruningEvaluator:
                     hist += torch.bincount(inds, minlength=num_classes**2).reshape(num_classes, num_classes)
                     
                 elif self.task == "det":
-                    from baseline.backbone import build_targets
                     imgs, targets = batch
                     imgs = imgs.to(device)
+
                     feats = self.backbone(imgs)
                     cls_logits, box_preds, obj_logits = self.probe(feats)
-                    grid_size = cls_logits.shape[-1]
-                    obj_t, cls_t, _ = build_targets(targets, grid_size=grid_size, device=device)
-                    
-                    obj_mask = obj_t > 0.5
-                    if obj_mask.sum() > 0:
-                        cls_preds = cls_logits.argmax(dim=1)
-                        
-                        if cls_preds.dim() == 3 and obj_mask.dim() == 4:
-                            obj_mask = obj_mask.squeeze(1)
-                            
-                        correct += (cls_preds[obj_mask] == cls_t[obj_mask]).sum().item()
-                        total += obj_mask.sum().item()
+
+                    # ---- 1. Convert predictions ----
+                    obj_scores = obj_logits.sigmoid()                  # (B, 1, S, S)
+                    cls_probs = cls_logits.softmax(dim=1)              # (B, C, S, S)
+                    cls_scores, cls_preds = cls_probs.max(dim=1)       # (B, S, S)
+
+                    scores = obj_scores.squeeze(1) * cls_scores        # combine obj + cls
+
+                    # ---- 2. Decode boxes (YOU must match your encoding) ----
+                    pred_boxes = self.decode_boxes(box_preds)          # (B, S, S, 4)
+
+                    # ---- 3. Loop per image ----
+                    for b in range(imgs.size(0)):
+                        gt_boxes = targets[b]["boxes"].to(device)      # (N, 4)
+                        gt_labels = targets[b]["labels"].to(device)
+
+                        # flatten predictions
+                        pred_b = pred_boxes[b].reshape(-1, 4)
+                        pred_s = scores[b].reshape(-1)
+                        pred_c = cls_preds[b].reshape(-1)
+
+                        # ---- 4. Confidence filtering ----
+                        keep = pred_s > 0.3
+                        pred_b = pred_b[keep]
+                        pred_s = pred_s[keep]
+                        pred_c = pred_c[keep]
+
+                        if pred_b.numel() == 0:
+                            total += len(gt_boxes)   # all missed
+                            continue
+
+                        # ---- 5. IoU matching ----
+                        ious = self.box_iou(pred_b, gt_boxes)  # (num_preds, num_gt)
+
+                        matched_gt = set()
+                        tp = 0
+
+                        for i in range(pred_b.size(0)):
+                            max_iou, j = ious[i].max(dim=0)
+
+                            if max_iou > 0.5 and j.item() not in matched_gt:
+                                if pred_c[i] == gt_labels[j]:
+                                    tp += 1
+                                    matched_gt.add(j.item())
+
+                        fp = pred_b.size(0) - tp
+                        fn = len(gt_boxes) - tp
+
+                        correct += tp
+                        total += (tp + fp + fn)
         for h in hooks:
             h.remove()
             
@@ -78,29 +116,30 @@ class PruningEvaluator:
             
         return correct / max(total, 1)
 
-    def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
-        # strategy: function that given current mask + census data
-        #           returns (layer_idx, head_idx) to prune next
-        # returns: list of (n_pruned, accuracy, flops) at each step
-        all_results = []
-        all_results = []
+    # def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
+    #     # strategy: function that given current mask + census data
+    #     #           returns (layer_idx, head_idx) to prune next
+    #     # returns: list of (n_pruned, accuracy, flops) at each step
+    #     all_results = []
+    #     all_results = []
 
-        for run in range(n_runs):  # repeat multiple times for averaging
-            mask = torch.ones(12, 12)
-            run_results = []
-            for step in range(n_steps):
-                layer, head = strategy(mask, census)
-                mask[layer, head] = 0
-                acc = self.evaluate(mask)
-                flops_ratio = (144 - (step + 1)) / 144
-                reward = acc / flops_ratio
-                run_results.append([acc, flops_ratio, reward])
-            all_results.append(run_results)
+    #     for run in range(n_runs):  # repeat multiple times for averaging
+    #         mask = torch.ones(12, 12)
+    #         run_results = []
+    #         for step in range(n_steps):
+    #             layer, head = strategy(mask, census)
+    #             mask[layer, head] = 0
+    #             acc = self.evaluate(mask)
+    #             flops_ratio = (144 - (step + 1)) / 144
+    #             reward = acc / flops_ratio
+    #             run_results.append([acc, flops_ratio, reward])
+    #         all_results.append(run_results)
+            
 
-        all_results = torch.tensor(all_results)  # (n_runs, n_steps, 3)
-        means = all_results.mean(dim=0)  # (n_steps, 3)
-        stds = all_results.std(dim=0, correction=0)  # (n_steps, 3)
-        return means, stds
+    #     all_results = torch.tensor(all_results)  # (n_runs, n_steps, 3)
+    #     means = all_results.mean(dim=0)  # (n_steps, 3)
+    #     stds = all_results.std(dim=0, correction=0)  # (n_steps, 3)
+    #     return means, stds
     
     @staticmethod
     def random_strategy(mask, census, max_per_layer=12):
@@ -150,7 +189,7 @@ class PruningEvaluator:
         return layer, head
 
 
-    def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5):
+    def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5, dataset_name=None):
         all_results = []
 
         for run in range(n_runs):  
@@ -171,11 +210,21 @@ class PruningEvaluator:
                 # Feed the new proxy-loss/reward back to the RL agent for its next state
                 if hasattr(strategy, 'update_state'):
                     loss_proxy = 1.0 - acc # the proxy loss since evaluators return acc natively
-                    strategy.update_state(loss_proxy, float(reward))
+                    strategy.update_state()
                     
                 run_results.append([acc, flops_ratio, reward])
                 
             all_results.append(run_results)
+            
+        if dataset_name is not None and hasattr(strategy, 'update_state'):
+            import os
+            import numpy as np
+            os.makedirs("results", exist_ok=True)
+            strat_name = strategy.__name__ if hasattr(strategy, "__name__") else strategy.__class__.__name__
+            save_path = f"results/final_mask_{dataset_name}_{strat_name}.npz"
+            np.savez(save_path, mask=mask.cpu().numpy())
+            print(f"Saved final mask to {save_path}")
+
 
         all_results = torch.tensor(all_results)  
         means = all_results.mean(dim=0)  
@@ -211,38 +260,20 @@ class PPOAgentStrategy:
         self.policy_network = policy_network
         self.policy_network.eval()
         self.device = device
-        self.env = env
+        self.env: TransformerPruningEnv = env
         self.reset()
         
     def reset(self):
-        if self.env is not None:
-            self.current_state = self.env.reset()
-        else:
-            # Track state variables if env is isolated
-            self.current_loss = 1.0 # Using a placeholder / proxy for unpruned state
-            self.sparsity = 0.0
-            self.total_reward = 0.0
+        self.current_state = self.env.reset()
 
     def __call__(self, mask, census):
         """Matches the signature: strategy(mask, census) -> (layer, head)"""
-        if self.env is not None:
-            state = self.current_state
-            head_mask = (self.env.mask.flatten() == 1.0).to(self.device)
-        else:
-            # 1. Calculate current sparsity
-            self.sparsity = 1.0 - (mask.sum().item() / 144.0)
+        state = self.current_state
             
-            # 2. Build the state vector [Mask (144) | Loss (1) | Sparsity (1) | Total Reward (1)]
-            state = torch.cat([
-                mask.flatten().to(self.device), 
-                torch.tensor([self.current_loss, self.sparsity, self.total_reward]).to(self.device)
-            ])
-            head_mask = (mask.flatten() == 1.0).to(self.device)
-            
-        stop_action_valid = torch.tensor([False], device=self.device) # STOP FUNCTION OFF (False)
+        stop_action_valid = torch.tensor([False], dtype=torch.bool, device=self.device) # STOP FUNCTION OFF (False)
+        head_mask = (self.env.mask.flatten() == 1.0).to(torch.bool)
         valid_mask = torch.cat([head_mask, stop_action_valid])
         
-        # 3. Get action probabilities from the Actor network
         with torch.no_grad():
             action_logits = self.policy_network.actor(state)
             
@@ -255,18 +286,13 @@ class PPOAgentStrategy:
         layer = action_idx // 12
         head = action_idx % 12
         
-        if self.env is not None:
-            self.last_action_idx = action_idx
+        self.last_action_idx = action_idx
             
         return layer, head
         
-    def update_state(self, loss, reward):
-        if self.env is not None:
+    def update_state(self, *args, **kwargs):
             # ignore proxies, step the actual environment using last action
-            self.current_state, _, _ = self.env.step(self.last_action_idx)
-        else:
-            self.current_loss = loss
-            self.total_reward += reward
+            self.current_state, _ , _ = self.env.step(self.last_action_idx)
 
 
 if __name__ == "__main__":

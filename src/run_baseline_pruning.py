@@ -85,17 +85,17 @@ def main():
         "baseline_acc": np.array([baseline_acc])
     }
 
-    # # Run standard baselines
-    # for name, strategy, runs in [
-    #     ("random", PruningEvaluator.random_strategy, 5),
-    #     ("magnitude", PruningEvaluator.magnitude_strategy, 1),
-    #     ("importance", PruningEvaluator.importance_strategy, 1),
-    #     ("uniform", PruningEvaluator.uniform_strategy, 1)
-    # ]:
-    #     print(f"Running {name} strategy...")
-    #     means, stds = evaluator.run_pruning_strategy(strategy, census, n_steps=72, n_runs=runs)
-    #     results[f"{name}_means"] = means.numpy()
-    #     results[f"{name}_stds"] = stds.numpy()
+    # Run standard baselines
+    for name, strategy, runs in [
+        ("random", PruningEvaluator.random_strategy, 5),
+        ("magnitude", PruningEvaluator.magnitude_strategy, 1),
+        ("importance", PruningEvaluator.importance_strategy, 1),
+        ("uniform", PruningEvaluator.uniform_strategy, 1)
+    ]:
+        print(f"Running {name} strategy...")
+        means, stds = evaluator.run_pruning_strategy(strategy, census, n_steps=72, n_runs=runs)
+        results[f"{name}_means"] = means.numpy()
+        results[f"{name}_stds"] = stds.numpy()
 
     # Optional RL Agent block
     if args.run_agent:
@@ -105,9 +105,6 @@ def main():
         from pruning_agent import TransformerPruningEnv
         
         print("Loading PPO RL agent...")
-        ppo_net = PPOActorCritic(input_dim=147, action_action_dim=145 if "rl_agent_ppo" in args.rl_agent_ckpt else 145) # Assuming action_dim=145 for 147 input dim
-        ppo_net = ppo_net.to(device) # Redoing to ensure proper creation
-        
         ppo_net = PPOActorCritic(input_dim=147, action_dim=145).to(device)
         
         if Path(args.rl_agent_ckpt).exists():
@@ -128,7 +125,7 @@ def main():
         
         ppo_strategy = PPOAgentStrategy(ppo_net, device=device, env=env_rl)
         print("Running RL (PPO) strategy...")
-        rl_means, rl_stds = evaluator.run_pruning_strategy(ppo_strategy, census, n_steps=72, n_runs=1)
+        rl_means, rl_stds = evaluator.run_pruning_strategy(ppo_strategy, census, n_steps=72, n_runs=1, dataset_name=args.dataset)
         results["rl_means"] = rl_means.numpy()
         results["rl_stds"] = rl_stds.numpy()
 

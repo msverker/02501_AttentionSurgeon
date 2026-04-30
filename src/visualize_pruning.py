@@ -24,51 +24,51 @@ def plot_accuracy_vs_pruned(results, output_dir, baseline_acc, dataset_name, met
     fig, ax = plt.subplots(figsize=(10, 6), facecolor="white")
     ax.set_facecolor("white")
 
-    # n_steps = len(results["random_means"])
-    n_steps = len(results['rl_means'])
+    n_steps = len(results["random_means"])
+    # n_steps = len(results['rl_means'])
     x = np.arange(1, n_steps + 1)
     pct = x / 144 * 100  # pruning percentage
 
-    # # random — with std band
-    # rand_acc = results["random_means"][:, 0]
-    # rand_std = results["random_stds"][:, 0]
-    # ax.plot(
-    #     pct,
-    #     rand_acc,
-    #     label="Random",
-    #     **{k: v for k, v in STRATEGY_STYLES["Random"].items() if k != "zorder"},
-    #     zorder=STRATEGY_STYLES["Random"]["zorder"],
-    #     linewidth=1.5,
-    # )
-    # ax.fill_between(
-    #     pct,
-    #     rand_acc - rand_std,
-    #     rand_acc + rand_std,
-    #     color=STRATEGY_STYLES["Random"]["color"],
-    #     alpha=0.15,
-    # )
+    # random — with std band
+    rand_acc = results["random_means"][:, 0]
+    rand_std = results["random_stds"][:, 0]
+    ax.plot(
+        pct,
+        rand_acc,
+        label="Random",
+        **{k: v for k, v in STRATEGY_STYLES["Random"].items() if k != "zorder"},
+        zorder=STRATEGY_STYLES["Random"]["zorder"],
+        linewidth=1.5,
+    )
+    ax.fill_between(
+        pct,
+        rand_acc - rand_std,
+        rand_acc + rand_std,
+        color=STRATEGY_STYLES["Random"]["color"],
+        alpha=0.15,
+    )
 
-    # # magnitude
-    # mag_acc = results["magnitude_means"][:, 0]
-    # ax.plot(
-    #     pct,
-    #     mag_acc,
-    #     label="Magnitude",
-    #     **{k: v for k, v in STRATEGY_STYLES["Magnitude"].items() if k != "zorder"},
-    #     zorder=STRATEGY_STYLES["Magnitude"]["zorder"],
-    #     linewidth=1.5,
-    # )
+    # magnitude
+    mag_acc = results["magnitude_means"][:, 0]
+    ax.plot(
+        pct,
+        mag_acc,
+        label="Magnitude",
+        **{k: v for k, v in STRATEGY_STYLES["Magnitude"].items() if k != "zorder"},
+        zorder=STRATEGY_STYLES["Magnitude"]["zorder"],
+        linewidth=1.5,
+    )
 
-    # # importance
-    # imp_acc = results["importance_means"][:, 0]
-    # ax.plot(
-    #     pct,
-    #     imp_acc,
-    #     label="Importance",
-    #     **{k: v for k, v in STRATEGY_STYLES["Importance"].items() if k != "zorder"},
-    #     zorder=STRATEGY_STYLES["Importance"]["zorder"],
-    #     linewidth=1.5,
-    # )
+    # importance
+    imp_acc = results["importance_means"][:, 0]
+    ax.plot(
+        pct,
+        imp_acc,
+        label="Importance",
+        **{k: v for k, v in STRATEGY_STYLES["Importance"].items() if k != "zorder"},
+        zorder=STRATEGY_STYLES["Importance"]["zorder"],
+        linewidth=1.5,
+    )
 
     # RL agent placeholder — add when available
     if "rl_means" in results:
@@ -134,46 +134,46 @@ def plot_reward_vs_pruned(results, output_dir, baseline_acc, dataset_name, metri
     fig, ax = plt.subplots(figsize=(10, 6), facecolor="white")
     ax.set_facecolor("white")
 
-    # n_steps = len(results["random_means"])
-    n_steps = len(results['rl_means'])
+    n_steps = len(results["random_means"])
+    # n_steps = len(results['rl_means'])
     x = np.arange(1, n_steps + 1)
     pct = x / 144 * 100
 
-    # rand_reward = results["random_means"][:, 2]
-    # rand_std = results["random_stds"][:, 2]
-    # ax.plot(
-    #     pct,
-    #     rand_reward,
-    #     label="Random",
-    #     **{k: v for k, v in STRATEGY_STYLES["Random"].items() if k != "zorder"},
-    #     zorder=1,
-    #     linewidth=1.5,
-    # )
-    # ax.fill_between(
-    #     pct,
-    #     rand_reward - rand_std,
-    #     rand_reward + rand_std,
-    #     color=STRATEGY_STYLES["Random"]["color"],
-    #     alpha=0.15,
-    # )
+    rand_reward = results["random_means"][:, 2]
+    rand_std = results["random_stds"][:, 2]
+    ax.plot(
+        pct,
+        rand_reward,
+        label="Random",
+        **{k: v for k, v in STRATEGY_STYLES["Random"].items() if k != "zorder"},
+        zorder=1,
+        linewidth=1.5,
+    )
+    ax.fill_between(
+        pct,
+        rand_reward - rand_std,
+        rand_reward + rand_std,
+        color=STRATEGY_STYLES["Random"]["color"],
+        alpha=0.15,
+    )
 
-    # ax.plot(
-    #     pct,
-    #     results["magnitude_means"][:, 2],
-    #     label="Magnitude",
-    #     **{k: v for k, v in STRATEGY_STYLES["Magnitude"].items() if k != "zorder"},
-    #     zorder=2,
-    #     linewidth=1.5,
-    # )
+    ax.plot(
+        pct,
+        results["magnitude_means"][:, 2],
+        label="Magnitude",
+        **{k: v for k, v in STRATEGY_STYLES["Magnitude"].items() if k != "zorder"},
+        zorder=2,
+        linewidth=1.5,
+    )
 
-    # ax.plot(
-    #     pct,
-    #     results["importance_means"][:, 2],
-    #     label="Importance",
-    #     **{k: v for k, v in STRATEGY_STYLES["Importance"].items() if k != "zorder"},
-    #     zorder=3,
-    #     linewidth=1.5,
-    # )
+    ax.plot(
+        pct,
+        results["importance_means"][:, 2],
+        label="Importance",
+        **{k: v for k, v in STRATEGY_STYLES["Importance"].items() if k != "zorder"},
+        zorder=3,
+        linewidth=1.5,
+    )
 
     if "rl_means" in results:
         rl_reward = results["rl_means"][:, 2]
