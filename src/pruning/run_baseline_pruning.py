@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from baseline.backbone import DinoV2Backbone, get_imagenet_loaders, ClassificationHead
 from pruning_agent import PPOActorCritic
-from prune import PruningEvaluator, PPOAgentStrategy
+from src.pruning.prune import PruningEvaluator, PPOAgentStrategy
 
 device = "cuda" if torch.cuda.is_available() else "mps"
 

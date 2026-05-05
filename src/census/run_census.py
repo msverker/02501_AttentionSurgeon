@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from baseline.backbone import ClassificationHead, DinoV2Backbone, get_imagenet_loaders
-from head_census import AttentionCensus
+from src.census.head_census import AttentionCensus
 
 device = "cuda"
 backbone = DinoV2Backbone(device=device)
