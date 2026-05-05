@@ -7,3 +7,4 @@
 #BSUB -W 4:00
 
 uv run src/run_baseline_pruning.py
+uv 

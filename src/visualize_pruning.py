@@ -20,11 +20,12 @@ def load_results(path):
     return {k: data[k] for k in data.files}
 
 
-def plot_accuracy_vs_pruned(results, output_dir, baseline_acc):
+def plot_accuracy_vs_pruned(results, output_dir, baseline_acc, dataset_name, metric_name="Top-1 Accuracy"):
     fig, ax = plt.subplots(figsize=(10, 6), facecolor="white")
     ax.set_facecolor("white")
 
     n_steps = len(results["random_means"])
+    # n_steps = len(results['rl_means'])
     x = np.arange(1, n_steps + 1)
     pct = x / 144 * 100  # pruning percentage
 
@@ -104,9 +105,11 @@ def plot_accuracy_vs_pruned(results, output_dir, baseline_acc):
     ax.text(50.5, ax.get_ylim()[0] + 0.01, "50% pruned", fontsize=8, color="#AAAAAA")
 
     ax.set_xlabel("Heads pruned (%)", fontsize=11)
-    ax.set_ylabel("Top-1 Accuracy", fontsize=11)
+    ax.set_ylabel(metric_name, fontsize=11)
+    
+    title_dataset = dataset_name.upper() if dataset_name else "Model"
     ax.set_title(
-        "Pruning Strategy Comparison  ·  DINOv2 ViT-B/16  ·  ImageNet-1K",
+        f"Pruning Strategy Comparison  ·  DINOv2 ViT-B/16  ·  {title_dataset}",
         fontsize=12,
         pad=14,
     )
@@ -116,21 +119,23 @@ def plot_accuracy_vs_pruned(results, output_dir, baseline_acc):
 
     sns.despine(ax=ax, offset=8, trim=True)
     plt.tight_layout()
+    suffix = f"_{dataset_name.lower()}" if dataset_name else ""
     fig.savefig(
-        output_dir / "pruning_comparison.png",
+        output_dir / f"pruning_comparison{suffix}.png",
         dpi=150,
         bbox_inches="tight",
         facecolor="white",
     )
     plt.close(fig)
-    print("  → pruning_comparison.png")
+    print(f"  → pruning_comparison{suffix}.png")
 
 
-def plot_reward_vs_pruned(results, output_dir, baseline_acc):
+def plot_reward_vs_pruned(results, output_dir, baseline_acc, dataset_name, metric_name="Top-1 Accuracy"):
     fig, ax = plt.subplots(figsize=(10, 6), facecolor="white")
     ax.set_facecolor("white")
 
     n_steps = len(results["random_means"])
+    # n_steps = len(results['rl_means'])
     x = np.arange(1, n_steps + 1)
     pct = x / 144 * 100
 
@@ -190,9 +195,10 @@ def plot_reward_vs_pruned(results, output_dir, baseline_acc):
         )
 
     ax.set_xlabel("Heads pruned (%)", fontsize=11)
-    ax.set_ylabel("Reward  (accuracy × FLOPs ratio)", fontsize=11)
+    ax.set_ylabel(f"Reward  ({metric_name.lower()} × FLOPs ratio)", fontsize=11)
+    title_dataset = dataset_name.upper() if dataset_name else "Model"
     ax.set_title(
-        "Pruning Reward Comparison  ·  DINOv2 ViT-B/16  ·  ImageNet-1K",
+        f"Pruning Reward Comparison  ·  DINOv2 ViT-B/16  ·  {title_dataset}",
         fontsize=12,
         pad=14,
     )
@@ -201,34 +207,43 @@ def plot_reward_vs_pruned(results, output_dir, baseline_acc):
 
     sns.despine(ax=ax, offset=8, trim=True)
     plt.tight_layout()
+    suffix = f"_{dataset_name.lower()}" if dataset_name else ""
     fig.savefig(
-        output_dir / "pruning_reward.png",
+        output_dir / f"pruning_reward{suffix}.png",
         dpi=150,
         bbox_inches="tight",
         facecolor="white",
     )
     plt.close(fig)
-    print("  → pruning_reward.png")
+    print(f"  → pruning_reward{suffix}.png")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--input", type=str, default="results/baseline_pruning_cls_results.npz"
+        "--input", type=str, default="results/baseline_pruning_imagenet_results.npz"
     )
     ap.add_argument("--output", type=str, default="figures")
+    ap.add_argument("--dataset-name", type=str, default="ImageNet", help="Name of the dataset to include in plot titles and filenames")
+    ap.add_argument("--metric-name", type=str, default="Top-1 Accuracy", help="Name of the metric for the y-axis")
+    ap.add_argument("--no-rl", action="store_true", help="Do not plot RL Agent performance")
     args = ap.parse_args()
 
     out = Path(args.output)
     out.mkdir(exist_ok=True)
 
     results = load_results(args.input)
+    
+    if args.no_rl:
+        results.pop("rl_means", None)
+        results.pop("rl_stds", None)
+
     baseline_acc = float(results["baseline_acc"].item())
     print(f"Baseline accuracy: {baseline_acc:.4f}")
 
     print(f"Saving figures to {out}/")
-    plot_accuracy_vs_pruned(results, out, baseline_acc)
-    plot_reward_vs_pruned(results, out, baseline_acc)
+    plot_accuracy_vs_pruned(results, out, baseline_acc, args.dataset_name, args.metric_name)
+    plot_reward_vs_pruned(results, out, baseline_acc, args.dataset_name, args.metric_name)
 
 
 if __name__ == "__main__":
