@@ -151,7 +151,7 @@ class PruningEvaluator:
         idx = torch.randint(len(unpruned[0]), (1,)).item()
         
         return unpruned[0][idx].item(), unpruned[1][idx].item()
-    
+
     @staticmethod
     def importance_strategy(mask, census, max_per_layer=12):
         scores = census["importance"].clone()
@@ -171,23 +171,20 @@ class PruningEvaluator:
                 scores[layer] = float("inf")
         idx = scores.argmin()
         return idx // 12, idx % 12
-    
+
     @staticmethod
     def uniform_strategy(mask, census):
         # prune from the layer with the most remaining heads
         # within that layer, pick the least important head
         heads_per_layer = mask.sum(dim=1)  # (12,)
-        
+
         # pick layer with most remaining heads (break ties by lowest index)
         layer = heads_per_layer.argmax().item()
-        
+
         # within that layer, pick lowest importance
         scores = census["importance"][layer].clone()
         scores[mask[layer] == 0] = float("inf")
         head = scores.argmin().item()
-        
-        return layer, head
-
 
     def run_pruning_strategy(self, strategy, census, n_steps=72, n_runs=5, dataset_name=None):
         all_results = []
@@ -247,6 +244,7 @@ class PruningEvaluator:
                 ctx = ctx.view(B, S, 12, head_dim)
                 ctx = ctx * mask_row.to(ctx.device).view(1, 1, 12, 1)
                 return (ctx.view(B, S, 768),) + output[1:]
+
             return hook
 
         for i, layer in enumerate(backbone.model.encoder.layer):
@@ -392,6 +390,7 @@ if __name__ == "__main__":
     for step in range(len(mag_means)):
         acc, flops, reward = mag_means[step]
         print(f"Step {step + 1}: Acc={acc:.4f}, Flops={flops:.4f}, Reward={reward:.4f}")
+
     print("Importance strategy results")
     for step in range(len(imp_means)):
         acc, flops, reward = imp_means[step]
